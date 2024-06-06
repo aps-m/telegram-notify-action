@@ -4,10 +4,9 @@
       "name": "Debug ts",
       "program": "${workspaceFolder}/src/index.ts",
       "request": "launch",
-      "skipFiles": [
-        "<node_internals>/**"
-      ],
-      "type": "node"
+      "skipFiles": ["<node_internals>/**"],
+      "type": "node",
+      "preLaunchTask": "Сборка"
     }
   ]
 }
