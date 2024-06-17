@@ -20,7 +20,7 @@ inputs:
   parse_mode:
     description: 'Parse mode: markdown or html'
     required: true
-    default: 'MarkdownV2'
+    default: 'HTML'
 
   message:
     description: 'Message text'
