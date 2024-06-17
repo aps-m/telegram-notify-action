@@ -39211,7 +39211,7 @@ async function run() {
         const token = core.getInput('token');
         const to = core.getInput('to');
         const message = core.getInput('message');
-        const message_file = core.getInput('message');
+        const message_file = core.getInput('message_file');
         const ParseMode = core.getInput('parse_mode'); // 'HTML', 'MarkdownV2'
         const document = core.getInput('document');
         const bot = new Bot(token);
