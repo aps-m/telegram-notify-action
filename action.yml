@@ -1,4 +1,4 @@
-name: 'Telegram notify'
+name: 'Telegram notify ci-cd action'
 description: 'Sending text and files to telegram'
 author: 'APS'
 
