@@ -1,23 +1,38 @@
-name: 'The name of your action here'
-description: 'Provide a description here'
-author: 'Your name or organization here'
+name: 'Telegram notify'
+description: 'Sending text and files to telegram'
+author: 'APS'
 
 # Add your action's branding here. This will appear on the GitHub Marketplace.
 branding:
-  icon: 'heart'
-  color: 'red'
+  icon: 'send'
+  color: 'blue'
 
 # Define your inputs here.
 inputs:
-  milliseconds:
-    description: 'Your input description here'
+  token:
+    description: 'Token for bot acess'
     required: true
-    default: '1000'
 
-# Define your outputs here.
-outputs:
-  time:
-    description: 'Your output description here'
+  to:
+    description: 'Chat id for sending'
+    required: true
+
+  parse_mode:
+    description: 'Parse mode: markdown or html'
+    required: true
+    default: 'MarkdownV2'
+
+  message:
+    description: 'Message text'
+    required: false
+
+  message_file:
+    description: 'Message file'
+    required: false
+
+  document:
+    description: 'Document'
+    required: false
 
 runs:
   using: node20
