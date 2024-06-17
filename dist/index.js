@@ -39223,7 +39223,7 @@ async function run() {
         }
         if (message !== '') {
             console.log('Sending simple message...');
-            await bot.api.sendMessage(to, message, { parse_mode: ParseMode });
+            await bot.api.sendMessage(Number(to), message, { parse_mode: ParseMode });
         }
         if (document !== '') {
             console.log(`Start sending file ${document}`);
