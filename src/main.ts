@@ -11,7 +11,7 @@ export async function run(): Promise<void> {
     const token: string = core.getInput('token')
     const to: string = core.getInput('to')
     const message: string | undefined = core.getInput('message')
-    const message_file: string | undefined = core.getInput('message')
+    const message_file: string | undefined = core.getInput('message_file')
     const ParseMode: string = core.getInput('parse_mode') // 'HTML', 'MarkdownV2'
     const document: string | undefined = core.getInput('document')
 
