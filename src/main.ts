@@ -27,7 +27,7 @@ export async function run(): Promise<void> {
 
     if (message !== '') {
       console.log('Sending simple message...')
-      await bot.api.sendMessage(Number(to), message, { parse_mode: ParseMode })
+      await bot.api.sendMessage(to, message, { parse_mode: ParseMode })
     }
 
     if (document !== '') {
