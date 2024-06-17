@@ -39215,17 +39215,17 @@ async function run() {
         const ParseMode = core.getInput('parse_mode'); // 'HTML', 'MarkdownV2'
         const document = core.getInput('document');
         const bot = new Bot(token);
-        if (message_file !== undefined) {
+        if (message_file !== '') {
             console.log('Generating message from defined file...');
             const text_from_file = fs.readFileSync(message_file, 'utf-8');
             console.log('Sending message from file...');
             await bot.api.sendMessage(to, text_from_file, { parse_mode: ParseMode });
         }
-        if (message !== undefined) {
+        if (message !== '') {
             console.log('Sending simple message...');
             await bot.api.sendMessage(to, message, { parse_mode: ParseMode });
         }
-        if (document !== undefined) {
+        if (document !== '') {
             console.log(`Start sending file ${document}`);
             await bot.api.sendDocument(to, new InputFile(document));
         }

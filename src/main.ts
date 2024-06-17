@@ -10,14 +10,14 @@ export async function run(): Promise<void> {
   try {
     const token: string = core.getInput('token')
     const to: string = core.getInput('to')
-    const message: string | undefined = core.getInput('message')
-    const message_file: string | undefined = core.getInput('message_file')
+    const message: string = core.getInput('message')
+    const message_file: string = core.getInput('message_file')
     const ParseMode: string = core.getInput('parse_mode') // 'HTML', 'MarkdownV2'
-    const document: string | undefined = core.getInput('document')
+    const document: string = core.getInput('document')
 
     const bot = new Bot(token)
 
-    if (message_file !== undefined) {
+    if (message_file !== '') {
       console.log('Generating message from defined file...')
       const text_from_file = fs.readFileSync(message_file, 'utf-8')
       console.log('Sending message from file...')
@@ -25,12 +25,12 @@ export async function run(): Promise<void> {
       await bot.api.sendMessage(to, text_from_file, { parse_mode: ParseMode })
     }
 
-    if (message !== undefined) {
+    if (message !== '') {
       console.log('Sending simple message...')
       await bot.api.sendMessage(to, message, { parse_mode: ParseMode })
     }
 
-    if (document !== undefined) {
+    if (document !== '') {
       console.log(`Start sending file ${document}`)
       await bot.api.sendDocument(to, new InputFile(document))
     }
