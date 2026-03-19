@@ -1,6 +1,19 @@
 import * as core from '@actions/core'
-const { Bot, InputFile } = require('grammy')
 import * as fs from 'fs'
+import type { ParseMode } from '@grammyjs/types'
+import { Bot, InputFile } from 'grammy'
+
+const supportedParseModes = ['HTML', 'Markdown', 'MarkdownV2'] as const
+
+function getParseMode(value: string): ParseMode {
+  if ((supportedParseModes as readonly string[]).includes(value)) {
+    return value as ParseMode
+  }
+
+  throw new Error(
+    `Unsupported parse_mode: ${value}. Expected one of ${supportedParseModes.join(', ')}`
+  )
+}
 
 /**
  * The main function for the action.
@@ -11,23 +24,23 @@ export async function run(): Promise<void> {
     const token: string = core.getInput('token')
     const to: string = core.getInput('to')
     const message: string = core.getInput('message')
-    const message_file: string = core.getInput('message_file')
-    const ParseMode: string = core.getInput('parse_mode') // 'HTML', 'MarkdownV2'
+    const messageFile: string = core.getInput('message_file')
+    const parseMode = getParseMode(core.getInput('parse_mode'))
     const document: string = core.getInput('document')
 
     const bot = new Bot(token)
 
-    if (message_file !== '') {
+    if (messageFile !== '') {
       console.log('Generating message from defined file...')
-      const text_from_file = fs.readFileSync(message_file, 'utf-8')
+      const textFromFile = fs.readFileSync(messageFile, 'utf-8')
       console.log('Sending message from file...')
 
-      await bot.api.sendMessage(to, text_from_file, { parse_mode: ParseMode })
+      await bot.api.sendMessage(to, textFromFile, { parse_mode: parseMode })
     }
 
     if (message !== '') {
       console.log('Sending simple message...')
-      await bot.api.sendMessage(to, message, { parse_mode: ParseMode })
+      await bot.api.sendMessage(to, message, { parse_mode: parseMode })
     }
 
     if (document !== '') {

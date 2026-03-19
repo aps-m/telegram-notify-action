@@ -1,89 +1,120 @@
 /**
  * Unit tests for the action's main functionality, src/main.ts
- *
- * These should be run as if the action was called from a workflow.
- * Specifically, the inputs listed in `action.yml` should be set as environment
- * variables following the pattern `INPUT_<INPUT_NAME>`.
  */
 
 import * as core from '@actions/core'
+import * as fs from 'fs'
 import * as main from '../src/main'
 
-// Mock the action's main function
-const runMock = jest.spyOn(main, 'run')
+const sendMessageMock = jest.fn()
+const sendDocumentMock = jest.fn()
+const inputFileMock = jest.fn()
 
-// Other utilities
-const timeRegex = /^\d{2}:\d{2}:\d{2}/
+jest.mock('fs', () => ({
+  ...jest.requireActual('fs'),
+  readFileSync: jest.fn()
+}))
 
-// Mock the GitHub Actions core library
-let debugMock: jest.SpiedFunction<typeof core.debug>
-let errorMock: jest.SpiedFunction<typeof core.error>
+jest.mock('grammy', () => ({
+  Bot: jest.fn().mockImplementation(() => ({
+    api: {
+      sendMessage: sendMessageMock,
+      sendDocument: sendDocumentMock
+    }
+  })),
+  InputFile: jest.fn().mockImplementation((path: string) => {
+    inputFileMock(path)
+    return { path }
+  })
+}))
+
 let getInputMock: jest.SpiedFunction<typeof core.getInput>
 let setFailedMock: jest.SpiedFunction<typeof core.setFailed>
-let setOutputMock: jest.SpiedFunction<typeof core.setOutput>
+const readFileSyncMock = fs.readFileSync as jest.MockedFunction<
+  typeof fs.readFileSync
+>
 
 describe('action', () => {
   beforeEach(() => {
     jest.clearAllMocks()
 
-    debugMock = jest.spyOn(core, 'debug').mockImplementation()
-    errorMock = jest.spyOn(core, 'error').mockImplementation()
     getInputMock = jest.spyOn(core, 'getInput').mockImplementation()
     setFailedMock = jest.spyOn(core, 'setFailed').mockImplementation()
-    setOutputMock = jest.spyOn(core, 'setOutput').mockImplementation()
   })
 
-  it('sets the time output', async () => {
-    // Set the action's inputs as return values from core.getInput()
+  it('sends message text and document', async () => {
     getInputMock.mockImplementation(name => {
       switch (name) {
-        case 'milliseconds':
-          return '500'
+        case 'token':
+          return 'bot-token'
+        case 'to':
+          return '123'
+        case 'parse_mode':
+          return 'HTML'
+        case 'message':
+          return 'Hello from action'
+        case 'document':
+          return 'report.txt'
         default:
           return ''
       }
     })
 
     await main.run()
-    expect(runMock).toHaveReturned()
 
-    // Verify that all of the core library functions were called correctly
-    expect(debugMock).toHaveBeenNthCalledWith(1, 'Waiting 500 milliseconds ...')
-    expect(debugMock).toHaveBeenNthCalledWith(
-      2,
-      expect.stringMatching(timeRegex)
-    )
-    expect(debugMock).toHaveBeenNthCalledWith(
-      3,
-      expect.stringMatching(timeRegex)
-    )
-    expect(setOutputMock).toHaveBeenNthCalledWith(
-      1,
-      'time',
-      expect.stringMatching(timeRegex)
-    )
-    expect(errorMock).not.toHaveBeenCalled()
+    expect(sendMessageMock).toHaveBeenCalledWith('123', 'Hello from action', {
+      parse_mode: 'HTML'
+    })
+    expect(inputFileMock).toHaveBeenCalledWith('report.txt')
+    expect(sendDocumentMock).toHaveBeenCalledWith('123', { path: 'report.txt' })
+    expect(setFailedMock).not.toHaveBeenCalled()
   })
 
-  it('sets a failed status', async () => {
-    // Set the action's inputs as return values from core.getInput()
+  it('reads message text from file and sends it', async () => {
     getInputMock.mockImplementation(name => {
       switch (name) {
-        case 'milliseconds':
-          return 'this is not a number'
+        case 'token':
+          return 'bot-token'
+        case 'to':
+          return '123'
+        case 'parse_mode':
+          return 'MarkdownV2'
+        case 'message_file':
+          return 'message.txt'
+        default:
+          return ''
+      }
+    })
+    readFileSyncMock.mockReturnValue('Message from file')
+
+    await main.run()
+
+    expect(readFileSyncMock).toHaveBeenCalledWith('message.txt', 'utf-8')
+    expect(sendMessageMock).toHaveBeenCalledWith('123', 'Message from file', {
+      parse_mode: 'MarkdownV2'
+    })
+    expect(setFailedMock).not.toHaveBeenCalled()
+  })
+
+  it('sets a failed status for unsupported parse mode', async () => {
+    getInputMock.mockImplementation(name => {
+      switch (name) {
+        case 'token':
+          return 'bot-token'
+        case 'to':
+          return '123'
+        case 'parse_mode':
+          return 'PlainText'
         default:
           return ''
       }
     })
 
     await main.run()
-    expect(runMock).toHaveReturned()
 
-    // Verify that all of the core library functions were called correctly
-    expect(setFailedMock).toHaveBeenNthCalledWith(
-      1,
-      'milliseconds not a number'
+    expect(setFailedMock).toHaveBeenCalledWith(
+      'Unsupported parse_mode: PlainText. Expected one of HTML, Markdown, MarkdownV2'
     )
-    expect(errorMock).not.toHaveBeenCalled()
+    expect(sendMessageMock).not.toHaveBeenCalled()
   })
 })
