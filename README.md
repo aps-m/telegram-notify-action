@@ -25,7 +25,7 @@
 
 ```yml
 - name: Send message
-  uses: aps-m/telegram-notify-action@v2
+  uses: aps-m/telegram-notify-action@v3
   with:
     token: ${{ secrets.TELEGRAM_TOKEN }}
     to: ${{ secrets.TELEGRAM_CHATID_TO }}
@@ -37,7 +37,7 @@
 
 ```yml
 - name: Send message
-  uses: aps-m/telegram-notify-action@v2
+  uses: aps-m/telegram-notify-action@v3
   with:
     token: ${{ secrets.TELEGRAM_TOKEN }}
     to: ${{ secrets.TELEGRAM_CHATID_TO }}
@@ -48,7 +48,7 @@
 
 ```yml
 - name: Send message
-  uses: aps-m/telegram-notify-action@v2
+  uses: aps-m/telegram-notify-action@v3
   with:
     token: ${{ secrets.TELEGRAM_TOKEN }}
     to: ${{ secrets.TELEGRAM_CHATID_TO }}
@@ -59,7 +59,7 @@
 
 ```yml
 - name: Send message
-  uses: aps-m/telegram-notify-action@v2
+  uses: aps-m/telegram-notify-action@v3
   with:
     token: ${{ secrets.TELEGRAM_TOKEN }}
     to: ${{ secrets.TELEGRAM_CHATID_TO }}
