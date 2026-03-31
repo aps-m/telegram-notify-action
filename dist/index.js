@@ -3721,14 +3721,17 @@ function useColors() {
 		return false;
 	}
 
+	let m;
+
 	// Is webkit? http://stackoverflow.com/a/16459606/376773
 	// document is undefined in react-native: https://github.com/facebook/react-native/pull/1632
+	// eslint-disable-next-line no-return-assign
 	return (typeof document !== 'undefined' && document.documentElement && document.documentElement.style && document.documentElement.style.WebkitAppearance) ||
 		// Is firebug? http://stackoverflow.com/a/398120/376773
 		(typeof window !== 'undefined' && window.console && (window.console.firebug || (window.console.exception && window.console.table))) ||
 		// Is firefox >= v31?
 		// https://developer.mozilla.org/en-US/docs/Tools/Web_Console#Styling_messages
-		(typeof navigator !== 'undefined' && navigator.userAgent && navigator.userAgent.toLowerCase().match(/firefox\/(\d+)/) && parseInt(RegExp.$1, 10) >= 31) ||
+		(typeof navigator !== 'undefined' && navigator.userAgent && (m = navigator.userAgent.toLowerCase().match(/firefox\/(\d+)/)) && parseInt(m[1], 10) >= 31) ||
 		// Double check webkit in userAgent just in case we are in a worker
 		(typeof navigator !== 'undefined' && navigator.userAgent && navigator.userAgent.toLowerCase().match(/applewebkit\/(\d+)/));
 }
@@ -3812,7 +3815,7 @@ function save(namespaces) {
 function load() {
 	let r;
 	try {
-		r = exports.storage.getItem('debug');
+		r = exports.storage.getItem('debug') || exports.storage.getItem('DEBUG') ;
 	} catch (error) {
 		// Swallow
 		// XXX (@Qix-) should we be logging these?
@@ -4038,24 +4041,62 @@ function setup(env) {
 		createDebug.names = [];
 		createDebug.skips = [];
 
-		let i;
-		const split = (typeof namespaces === 'string' ? namespaces : '').split(/[\s,]+/);
-		const len = split.length;
+		const split = (typeof namespaces === 'string' ? namespaces : '')
+			.trim()
+			.replace(/\s+/g, ',')
+			.split(',')
+			.filter(Boolean);
 
-		for (i = 0; i < len; i++) {
-			if (!split[i]) {
-				// ignore empty strings
-				continue;
-			}
-
-			namespaces = split[i].replace(/\*/g, '.*?');
-
-			if (namespaces[0] === '-') {
-				createDebug.skips.push(new RegExp('^' + namespaces.slice(1) + '$'));
+		for (const ns of split) {
+			if (ns[0] === '-') {
+				createDebug.skips.push(ns.slice(1));
 			} else {
-				createDebug.names.push(new RegExp('^' + namespaces + '$'));
+				createDebug.names.push(ns);
 			}
 		}
+	}
+
+	/**
+	 * Checks if the given string matches a namespace template, honoring
+	 * asterisks as wildcards.
+	 *
+	 * @param {String} search
+	 * @param {String} template
+	 * @return {Boolean}
+	 */
+	function matchesTemplate(search, template) {
+		let searchIndex = 0;
+		let templateIndex = 0;
+		let starIndex = -1;
+		let matchIndex = 0;
+
+		while (searchIndex < search.length) {
+			if (templateIndex < template.length && (template[templateIndex] === search[searchIndex] || template[templateIndex] === '*')) {
+				// Match character or proceed with wildcard
+				if (template[templateIndex] === '*') {
+					starIndex = templateIndex;
+					matchIndex = searchIndex;
+					templateIndex++; // Skip the '*'
+				} else {
+					searchIndex++;
+					templateIndex++;
+				}
+			} else if (starIndex !== -1) { // eslint-disable-line no-negated-condition
+				// Backtrack to the last '*' and try to match more characters
+				templateIndex = starIndex + 1;
+				matchIndex++;
+				searchIndex = matchIndex;
+			} else {
+				return false; // No match
+			}
+		}
+
+		// Handle trailing '*' in template
+		while (templateIndex < template.length && template[templateIndex] === '*') {
+			templateIndex++;
+		}
+
+		return templateIndex === template.length;
 	}
 
 	/**
@@ -4066,8 +4107,8 @@ function setup(env) {
 	*/
 	function disable() {
 		const namespaces = [
-			...createDebug.names.map(toNamespace),
-			...createDebug.skips.map(toNamespace).map(namespace => '-' + namespace)
+			...createDebug.names,
+			...createDebug.skips.map(namespace => '-' + namespace)
 		].join(',');
 		createDebug.enable('');
 		return namespaces;
@@ -4081,39 +4122,19 @@ function setup(env) {
 	* @api public
 	*/
 	function enabled(name) {
-		if (name[name.length - 1] === '*') {
-			return true;
-		}
-
-		let i;
-		let len;
-
-		for (i = 0, len = createDebug.skips.length; i < len; i++) {
-			if (createDebug.skips[i].test(name)) {
+		for (const skip of createDebug.skips) {
+			if (matchesTemplate(name, skip)) {
 				return false;
 			}
 		}
 
-		for (i = 0, len = createDebug.names.length; i < len; i++) {
-			if (createDebug.names[i].test(name)) {
+		for (const ns of createDebug.names) {
+			if (matchesTemplate(name, ns)) {
 				return true;
 			}
 		}
 
 		return false;
-	}
-
-	/**
-	* Convert regexp to namespace
-	*
-	* @param {RegExp} regxep
-	* @return {String} namespace
-	* @api private
-	*/
-	function toNamespace(regexp) {
-		return regexp.toString()
-			.substring(2, regexp.toString().length - 2)
-			.replace(/\.\*\?$/, '*');
 	}
 
 	/**
@@ -4357,11 +4378,11 @@ function getDate() {
 }
 
 /**
- * Invokes `util.format()` with the specified arguments and writes to stderr.
+ * Invokes `util.formatWithOptions()` with the specified arguments and writes to stderr.
  */
 
 function log(...args) {
-	return process.stderr.write(util.format(...args) + '\n');
+	return process.stderr.write(util.formatWithOptions(exports.inspectOpts, ...args) + '\n');
 }
 
 /**
@@ -5346,6 +5367,7 @@ exports.DEFAULT_UPDATE_TYPES = [
     "callback_query",
     "shipping_query",
     "pre_checkout_query",
+    "purchased_paid_media",
     "poll",
     "poll_answer",
     "my_chat_member",
@@ -5528,7 +5550,7 @@ class Bot extends composer_js_1.Composer {
      * your bot will handle.
      *
      * If you're writing a library on top of grammY, check out the
-     * [documentation](https://grammy.dev/plugins/runner.html) of the runner
+     * [documentation](https://grammy.dev/plugins/runner) of the runner
      * plugin for an example that uses this method.
      *
      * @param update An update from the Telegram Bot API
@@ -5587,7 +5609,7 @@ a known bot info object.");
      * will impact the responsiveness negatively, so it makes sense to use the
      * `@grammyjs/runner` package even if you receive much fewer messages. If
      * you worry about how much load your bot can handle, check out the grammY
-     * [documentation](https://grammy.dev/advanced/scaling.html) about scaling
+     * [documentation](https://grammy.dev/advanced/scaling) about scaling
      * up.
      *
      * @param options Options to use for simple long polling
@@ -5667,6 +5689,23 @@ a known bot info object.");
         }
     }
     /**
+     * Returns true if the bot is currently running via built-in long polling,
+     * and false otherwise.
+     *
+     * If this method returns true, it means that `bot.start()` has been called,
+     * and that the bot has neither crashed nor was it stopped via a call to
+     * `bot.stop()`. This also means that you cannot use this method to check if
+     * a webhook server is running, or if grammY runner was started.
+     *
+     * Note that this method will already begin to return true even before the
+     * call to `bot.start()` has completed its initialization phase (and hence
+     * before `bot.isInited()` returns true). By extension, this method
+     * returns true before `onStart` callback of `bot.start()` is invoked.
+     */
+    isRunning() {
+        return this.pollingRunning;
+    }
+    /**
      * Sets the bots error handler that is used during long polling.
      *
      * You should call this method to set an error handler if you are using long
@@ -5690,17 +5729,22 @@ a known bot info object.");
         const limit = options === null || options === void 0 ? void 0 : options.limit;
         const timeout = (_a = options === null || options === void 0 ? void 0 : options.timeout) !== null && _a !== void 0 ? _a : 30; // seconds
         let allowed_updates = (_b = options === null || options === void 0 ? void 0 : options.allowed_updates) !== null && _b !== void 0 ? _b : []; // reset to default if unspecified
-        while (this.pollingRunning) {
-            // fetch updates
-            const updates = await this.fetchUpdates({ limit, timeout, allowed_updates });
-            // check if polling stopped
-            if (updates === undefined)
-                break;
-            // handle updates
-            await this.handleUpdates(updates);
-            // Telegram uses the last setting if `allowed_updates` is omitted so
-            // we can save some traffic by only sending it in the first request
-            allowed_updates = undefined;
+        try {
+            while (this.pollingRunning) {
+                // fetch updates
+                const updates = await this.fetchUpdates({ limit, timeout, allowed_updates });
+                // check if polling stopped
+                if (updates === undefined)
+                    break;
+                // handle updates
+                await this.handleUpdates(updates);
+                // Telegram uses the last setting if `allowed_updates` is omitted so
+                // we can save some traffic by only sending it in the first request
+                allowed_updates = undefined;
+            }
+        }
+        finally {
+            this.pollingRunning = false;
         }
     }
     /**
@@ -5762,7 +5806,7 @@ exports.Bot = Bot;
  *
  * Otherwise, if the first attempt at running the task fails, the task is
  * retried immediately. If second attempt fails, too, waits for 100 ms, and then
- * doubles this delay for every subsequent attemt. Never waits longer than 1
+ * doubles this delay for every subsequent attempt. Never waits longer than 1
  * hour before retrying.
  *
  * @param task Async task to perform
@@ -5895,7 +5939,8 @@ const shim_node_js_1 = __nccwpck_require__(9739);
 "use strict";
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.Composer = exports.run = exports.BotError = void 0;
+exports.Composer = exports.BotError = void 0;
+exports.run = run;
 const context_js_1 = __nccwpck_require__(1928);
 // === Middleware errors
 /**
@@ -5970,7 +6015,6 @@ const leaf = () => Promise.resolve();
 async function run(middleware, ctx) {
     await middleware(ctx, leaf);
 }
-exports.run = run;
 // === Composer
 /**
  * The composer is the heart of the middleware system in grammY. It is also the
@@ -5983,7 +6027,7 @@ exports.run = run;
  *
  * On the other hand, if you want to dig deeper into how grammY implements
  * middleware, check out the
- * [documentation](https://grammy.dev/advanced/middleware.html) on the website.
+ * [documentation](https://grammy.dev/advanced/middleware) on the website.
  */
 class Composer {
     /**
@@ -6013,7 +6057,7 @@ class Composer {
      *
      * This method returns a new instance of composer. The returned instance can
      * be further extended, and all changes will be regarded here. Confer the
-     * [documentation](https://grammy.dev/advanced/middleware.html) on the
+     * [documentation](https://grammy.dev/advanced/middleware) on the
      * website if you want to know more about how the middleware system in
      * grammY works, especially when it comes to chaining the method calls
      * (`use( ... ).use( ... ).use( ... )`).
@@ -6053,7 +6097,7 @@ class Composer {
      *
      * You can use autocomplete in VS Code to see all available filter queries.
      * Check out the
-     * [documentation](https://grammy.dev/guide/filter-queries.html) on the
+     * [documentation](https://grammy.dev/guide/filter-queries) on the
      * website to learn more about filter queries in grammY.
      *
      * It is possible to pass multiple filter queries in an array, i.e.
@@ -6224,7 +6268,7 @@ class Composer {
      * // Groups and supergroups only
      * bot.chatType(["group", "supergroup"], ctx => { ... });
      * ```
-     * [Remember](https://grammy.dev/guide/context.html#shortcuts) also that you
+     * [Remember](https://grammy.dev/guide/context#shortcuts) also that you
      * can access the chat type via `ctx.chat.type`.
      *
      * @param chatType The chat type
@@ -6324,10 +6368,10 @@ class Composer {
     }
     /**
      * Registers middleware for the ChosenInlineResult by the given id or ids.
-     * ChosenInlineResult represents a result of an inline query that was
-     * chosen by the user and sent to their chat partner. Check out
-     * https://core.telegram.org/bots/api#choseninlineresult to read more
-     * about chosen inline results.
+     * ChosenInlineResult represents a result of an inline query that was chosen
+     * by the user and sent to their chat partner. Check out
+     * https://core.telegram.org/bots/api#choseninlineresult to read more about
+     * chosen inline results.
      *
      * ```ts
      * bot.chosenInlineResult('id', async ctx => {
@@ -6341,6 +6385,52 @@ class Composer {
      */
     chosenInlineResult(resultId, ...middleware) {
         return this.filter(context_js_1.Context.has.chosenInlineResult(resultId), ...middleware);
+    }
+    /**
+     * Registers middleware for pre-checkout queries. Telegram sends a
+     * pre-checkout query to your bot whenever a user has confirmed their
+     * payment and shipping details. You bot will then receive all information
+     * about the order and has to respond within 10 seconds with a confirmation
+     * of whether everything is alright (goods are available, etc.) and the bot
+     * is ready to proceed with the order. Check out
+     * https://core.telegram.org/bots/api#precheckoutquery to read more about
+     * pre-checkout queries.
+     *
+     * ```ts
+     * bot.preCheckoutQuery('invoice_payload', async ctx => {
+     *   // Answer the pre-checkout query, confer https://core.telegram.org/bots/api#answerprecheckoutquery
+     *   await ctx.answerPreCheckoutQuery( ... )
+     * })
+     * ```
+     *
+     * @param trigger The string to look for in the invoice payload
+     * @param middleware The middleware to register
+     */
+    preCheckoutQuery(trigger, ...middleware) {
+        return this.filter(context_js_1.Context.has.preCheckoutQuery(trigger), ...middleware);
+    }
+    /**
+     * Registers middleware for shipping queries. If you sent an invoice
+     * requesting a shipping address and the parameter _is_flexible_ was
+     * specified, Telegram will send a shipping query to your bot whenever a
+     * user has confirmed their shipping details. You bot will then receive the
+     * shipping information and can respond with a confirmation of whether
+     * delivery to the specified address is possible. Check out
+     * https://core.telegram.org/bots/api#shippingquery to read more about
+     * shipping queries.
+     *
+     * ```ts
+     * bot.shippingQuery('invoice_payload', async ctx => {
+     *   // Answer the shipping query, confer https://core.telegram.org/bots/api#answershippingquery
+     *   await ctx.answerShippingQuery( ... )
+     * })
+     * ```
+     *
+     * @param trigger The string to look for in the invoice payload
+     * @param middleware The middleware to register
+     */
+    shippingQuery(trigger, ...middleware) {
+        return this.filter(context_js_1.Context.has.shippingQuery(trigger), ...middleware);
     }
     filter(predicate, ...middleware) {
         const composer = new Composer(...middleware);
@@ -6380,11 +6470,11 @@ class Composer {
      * have completed.
      *
      * Both the fork and the downstream middleware are awaited with
-     * `Promise.all`, so you will only be to catch up to one error (the one that
-     * is thrown first).
+     * `Promise.all`, so you will only be able to catch at most one error (the
+     * one that is thrown first).
      *
-     * In opposite to the other middleware methods on composer, `fork` does not
-     * return simply return the composer connected to the main middleware stack.
+     * In contrast to the other middleware methods on composer, `fork` does not
+     * simply return the composer connected to the main middleware stack.
      * Instead, it returns the created composer _of the fork_ connected to the
      * middleware stack. This allows for the following pattern.
      * ```ts
@@ -6525,7 +6615,7 @@ class Composer {
      * ```
      *
      * Check out the
-     * [documentation](https://grammy.dev/guide/errors.html#error-boundaries) on
+     * [documentation](https://grammy.dev/guide/errors#error-boundaries) on
      * the website to learn more about error boundaries.
      *
      * @param errorHandler The error handler to use
@@ -6628,11 +6718,18 @@ const checker = {
         const normalized = typeof reaction === "string"
             ? [{ type: "emoji", emoji: reaction }]
             : (Array.isArray(reaction) ? reaction : [reaction]).map((emoji) => typeof emoji === "string" ? { type: "emoji", emoji } : emoji);
+        const emoji = new Set(normalized.filter((r) => r.type === "emoji")
+            .map((r) => r.emoji));
+        const customEmoji = new Set(normalized.filter((r) => r.type === "custom_emoji")
+            .map((r) => r.custom_emoji_id));
+        const paid = normalized.some((r) => r.type === "paid");
         return (ctx) => {
             if (!hasMessageReaction(ctx))
                 return false;
             const { old_reaction, new_reaction } = ctx.messageReaction;
+            // try to find a wanted reaction that is new and not old
             for (const reaction of new_reaction) {
+                // first check if the reaction existed previously
                 let isOld = false;
                 if (reaction.type === "emoji") {
                     for (const old of old_reaction) {
@@ -6654,34 +6751,38 @@ const checker = {
                         }
                     }
                 }
+                else if (reaction.type === "paid") {
+                    for (const old of old_reaction) {
+                        if (old.type !== "paid")
+                            continue;
+                        isOld = true;
+                        break;
+                    }
+                }
                 else {
                     // always regard unsupported emoji types as new
                 }
-                if (!isOld) {
-                    if (reaction.type === "emoji") {
-                        for (const wanted of normalized) {
-                            if (wanted.type !== "emoji")
-                                continue;
-                            if (wanted.emoji === reaction.emoji) {
-                                return true;
-                            }
-                        }
-                    }
-                    else if (reaction.type === "custom_emoji") {
-                        for (const wanted of normalized) {
-                            if (wanted.type !== "custom_emoji")
-                                continue;
-                            if (wanted.custom_emoji_id ===
-                                reaction.custom_emoji_id) {
-                                return true;
-                            }
-                        }
-                    }
-                    else {
-                        // always regard unsupported emoji types as new
+                // disregard reaction if it is not new
+                if (isOld)
+                    continue;
+                // check if the new reaction is wanted and short-circuit
+                if (reaction.type === "emoji") {
+                    if (emoji.has(reaction.emoji))
                         return true;
-                    }
                 }
+                else if (reaction.type === "custom_emoji") {
+                    if (customEmoji.has(reaction.custom_emoji_id))
+                        return true;
+                }
+                else if (reaction.type === "paid") {
+                    if (paid)
+                        return true;
+                }
+                else {
+                    // always regard unsupported emoji types as new
+                    return true;
+                }
+                // new reaction not wanted, check next one
             }
             return false;
         };
@@ -6711,6 +6812,18 @@ const checker = {
         const trg = triggerFn(trigger);
         return (ctx) => hasChosenInlineResult(ctx) &&
             match(ctx, ctx.chosenInlineResult.result_id, trg);
+    },
+    preCheckoutQuery(trigger) {
+        const hasPreCheckoutQuery = checker.filterQuery("pre_checkout_query");
+        const trg = triggerFn(trigger);
+        return (ctx) => hasPreCheckoutQuery(ctx) &&
+            match(ctx, ctx.preCheckoutQuery.invoice_payload, trg);
+    },
+    shippingQuery(trigger) {
+        const hasShippingQuery = checker.filterQuery("shipping_query");
+        const trg = triggerFn(trigger);
+        return (ctx) => hasShippingQuery(ctx) &&
+            match(ctx, ctx.shippingQuery.invoice_payload, trg);
     },
 };
 // === Context class
@@ -6747,7 +6860,7 @@ const checker = {
  * methods to keep information about how a regular expression was matched.
  *
  * Read up about middleware on the
- * [website](https://grammy.dev/guide/context.html) if you want to know more
+ * [website](https://grammy.dev/guide/context) if you want to know more
  * about the powerful opportunities that lie in context objects, and about how
  * grammY implements them.
  */
@@ -6771,6 +6884,7 @@ class Context {
         this.me = me;
     }
     // UPDATE SHORTCUTS
+    // Keep in sync with types in `filter.ts`.
     /** Alias for `ctx.update.message` */
     get message() {
         return this.update.message;
@@ -6859,6 +6973,10 @@ class Context {
     get removedChatBoost() {
         return this.update.removed_chat_boost;
     }
+    /** Alias for `ctx.update.purchased_paid_media` */
+    get purchasedPaidMedia() {
+        return this.update.purchased_paid_media;
+    }
     // AGGREGATION SHORTCUTS
     /**
      * Get the message object from wherever possible. Alias for `this.message ??
@@ -6897,12 +7015,13 @@ class Context {
      * (this.chatBoost?.boost ?? this.removedChatBoost)?.source)?.user ??
      * (this.callbackQuery ?? this.msg ?? this.inlineQuery ??
      * this.chosenInlineResult ?? this.shippingQuery ?? this.preCheckoutQuery ??
-     * this.myChatMember ?? this.chatMember ?? this.chatJoinRequest)?.from`.
+     * this.myChatMember ?? this.chatMember ?? this.chatJoinRequest ??
+     * this.purchasedPaidMedia)?.from`.
      */
     get from() {
-        var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o, _p, _q, _r;
+        var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o, _p, _q, _r, _s;
         // Keep in sync with types in `filter.ts`.
-        return (_g = (_f = ((_b = (_a = this.businessConnection) !== null && _a !== void 0 ? _a : this.messageReaction) !== null && _b !== void 0 ? _b : (_e = ((_d = (_c = this.chatBoost) === null || _c === void 0 ? void 0 : _c.boost) !== null && _d !== void 0 ? _d : this.removedChatBoost)) === null || _e === void 0 ? void 0 : _e.source)) === null || _f === void 0 ? void 0 : _f.user) !== null && _g !== void 0 ? _g : (_r = ((_q = (_p = (_o = (_m = (_l = (_k = (_j = (_h = this.callbackQuery) !== null && _h !== void 0 ? _h : this.msg) !== null && _j !== void 0 ? _j : this.inlineQuery) !== null && _k !== void 0 ? _k : this.chosenInlineResult) !== null && _l !== void 0 ? _l : this.shippingQuery) !== null && _m !== void 0 ? _m : this.preCheckoutQuery) !== null && _o !== void 0 ? _o : this.myChatMember) !== null && _p !== void 0 ? _p : this.chatMember) !== null && _q !== void 0 ? _q : this.chatJoinRequest)) === null || _r === void 0 ? void 0 : _r.from;
+        return (_g = (_f = ((_b = (_a = this.businessConnection) !== null && _a !== void 0 ? _a : this.messageReaction) !== null && _b !== void 0 ? _b : (_e = ((_d = (_c = this.chatBoost) === null || _c === void 0 ? void 0 : _c.boost) !== null && _d !== void 0 ? _d : this.removedChatBoost)) === null || _e === void 0 ? void 0 : _e.source)) === null || _f === void 0 ? void 0 : _f.user) !== null && _g !== void 0 ? _g : (_s = ((_r = (_q = (_p = (_o = (_m = (_l = (_k = (_j = (_h = this.callbackQuery) !== null && _h !== void 0 ? _h : this.msg) !== null && _j !== void 0 ? _j : this.inlineQuery) !== null && _k !== void 0 ? _k : this.chosenInlineResult) !== null && _l !== void 0 ? _l : this.shippingQuery) !== null && _m !== void 0 ? _m : this.preCheckoutQuery) !== null && _o !== void 0 ? _o : this.myChatMember) !== null && _p !== void 0 ? _p : this.chatMember) !== null && _q !== void 0 ? _q : this.chatJoinRequest) !== null && _r !== void 0 ? _r : this.purchasedPaidMedia)) === null || _s === void 0 ? void 0 : _s.from;
     }
     /**
      * Get the message identifier from wherever possible. Alias for
@@ -6976,15 +7095,18 @@ class Context {
      *   customEmojiAdded: [],
      *   customEmojiKept: [],
      *   customEmojiRemoved: ['id0123'],
+     *   paid: true,
+     *   paidAdded: false,
+     *   paidRemoved: false,
      * }
      * ```
      * In the above example, a tada reaction was added by the user, and a custom
      * emoji reaction with the custom emoji 'id0123' was removed in the same
-     * update. The user had already reacted with a thumbs up reaction, which
-     * they left unchanged. As a result, the current reaction by the user is
-     * thumbs up and tada. Note that the current reaction (both emoji and custom
-     * emoji in one list) can also be obtained from
-     * `ctx.messageReaction.new_reaction`.
+     * update. The user had already reacted with a thumbs up reaction and a paid
+     * star reaction, which they left both unchanged. As a result, the current
+     * reaction by the user is thumbs up, tada, and a paid reaction. Note that
+     * the current reaction (all emoji reactions regardless of type in one list)
+     * can also be obtained from `ctx.messageReaction.new_reaction`.
      *
      * Remember that reaction updates only include information about the
      * reaction of a specific user. The respective message may have many more
@@ -7001,6 +7123,8 @@ class Context {
         const customEmojiAdded = [];
         const customEmojiKept = [];
         const customEmojiRemoved = [];
+        let paid = false;
+        let paidAdded = false;
         const r = this.messageReaction;
         if (r !== undefined) {
             const { old_reaction, new_reaction } = r;
@@ -7012,6 +7136,9 @@ class Context {
                 else if (reaction.type === "custom_emoji") {
                     customEmoji.push(reaction.custom_emoji_id);
                 }
+                else if (reaction.type === "paid") {
+                    paid = paidAdded = true;
+                }
             }
             // temporarily move all old emoji to the *Removed arrays
             for (const reaction of old_reaction) {
@@ -7020,6 +7147,9 @@ class Context {
                 }
                 else if (reaction.type === "custom_emoji") {
                     customEmojiRemoved.push(reaction.custom_emoji_id);
+                }
+                else if (reaction.type === "paid") {
+                    paidAdded = false;
                 }
             }
             // temporarily move all new emoji to the *Added arrays
@@ -7067,6 +7197,8 @@ class Context {
             customEmojiAdded,
             customEmojiKept,
             customEmojiRemoved,
+            paid,
+            paidAdded,
         };
     }
     /**
@@ -7142,14 +7274,37 @@ class Context {
         return Context.has.inlineQuery(trigger)(this);
     }
     /**
-     * Returns `true` if this context object contains the chosen inline result, or
-     * if the contained chosen inline result matches the given regular expression. It
-     * returns `false` otherwise. This uses the same logic as `bot.chosenInlineResult`.
+     * Returns `true` if this context object contains the chosen inline result,
+     * or if the contained chosen inline result matches the given regular
+     * expression. It returns `false` otherwise. This uses the same logic as
+     * `bot.chosenInlineResult`.
      *
      * @param trigger The string or regex to match
      */
     hasChosenInlineResult(trigger) {
         return Context.has.chosenInlineResult(trigger)(this);
+    }
+    /**
+     * Returns `true` if this context object contains the given pre-checkout
+     * query, or if the contained pre-checkout query matches the given regular
+     * expression. It returns `false` otherwise. This uses the same logic as
+     * `bot.preCheckoutQuery`.
+     *
+     * @param trigger The string or regex to match
+     */
+    hasPreCheckoutQuery(trigger) {
+        return Context.has.preCheckoutQuery(trigger)(this);
+    }
+    /**
+     * Returns `true` if this context object contains the given shipping query,
+     * or if the contained shipping query matches the given regular expression.
+     * It returns `false` otherwise. This uses the same logic as
+     * `bot.shippingQuery`.
+     *
+     * @param trigger The string or regex to match
+     */
+    hasShippingQuery(trigger) {
+        return Context.has.shippingQuery(trigger)(this);
     }
     // API
     /**
@@ -7162,7 +7317,34 @@ class Context {
      * **Official reference:** https://core.telegram.org/bots/api#sendmessage
      */
     reply(text, other, signal) {
-        return this.api.sendMessage(orThrow(this.chatId, "sendMessage"), text, { business_connection_id: this.businessConnectionId, ...other }, signal);
+        var _a;
+        const msg = this.msg;
+        return this.api.sendMessage(orThrow(this.chatId, "sendMessage"), text, {
+            business_connection_id: this.businessConnectionId,
+            ...((msg === null || msg === void 0 ? void 0 : msg.is_topic_message)
+                ? { message_thread_id: msg.message_thread_id }
+                : {}),
+            direct_messages_topic_id: (_a = msg === null || msg === void 0 ? void 0 : msg.direct_messages_topic) === null || _a === void 0 ? void 0 : _a.topic_id,
+            ...other,
+        }, signal);
+    }
+    /**
+     * Context-aware alias for `api.sendMessageDraft`. Use this method to stream a partial message to a user while the message is being generated. Returns True on success.
+     *
+     * @param text Text of the message to be sent, 1-4096 characters after entities parsing
+     * @param other Optional remaining parameters, confer the official reference below
+     * @param signal Optional `AbortSignal` to cancel the request
+     *
+     * **Official reference:** https://core.telegram.org/bots/api#sendmessagedraft
+     */
+    replyWithDraft(text, other, signal) {
+        const msg = this.msg;
+        return this.api.sendMessageDraft(orThrow(this.chatId, "sendMessageDraft"), this.update.update_id, text, {
+            ...((msg === null || msg === void 0 ? void 0 : msg.is_topic_message)
+                ? { message_thread_id: msg === null || msg === void 0 ? void 0 : msg.message_thread_id }
+                : {}),
+            ...other,
+        }, signal);
     }
     /**
      * Context-aware alias for `api.forwardMessage`. Use this method to forward messages of any kind. Service messages and messages with protected content can't be forwarded. On success, the sent Message is returned.
@@ -7174,7 +7356,12 @@ class Context {
      * **Official reference:** https://core.telegram.org/bots/api#forwardmessage
      */
     forwardMessage(chat_id, other, signal) {
-        return this.api.forwardMessage(chat_id, orThrow(this.chatId, "forwardMessage"), orThrow(this.msgId, "forwardMessage"), other, signal);
+        var _a;
+        const msg = this.msg;
+        return this.api.forwardMessage(chat_id, orThrow(this.chatId, "forwardMessage"), orThrow(this.msgId, "forwardMessage"), {
+            direct_messages_topic_id: (_a = msg === null || msg === void 0 ? void 0 : msg.direct_messages_topic) === null || _a === void 0 ? void 0 : _a.topic_id,
+            ...other,
+        }, signal);
     }
     /**
      * Context-aware alias for `api.forwardMessages`. Use this method to forward multiple messages of any kind. If some of the specified messages can't be found or forwarded, they are skipped. Service messages and messages with protected content can't be forwarded. Album grouping is kept for forwarded messages. On success, an array of MessageId of the sent messages is returned.
@@ -7187,10 +7374,15 @@ class Context {
      * **Official reference:** https://core.telegram.org/bots/api#forwardmessages
      */
     forwardMessages(chat_id, message_ids, other, signal) {
-        return this.api.forwardMessages(chat_id, orThrow(this.chatId, "forwardMessages"), message_ids, other, signal);
+        var _a;
+        const msg = this.msg;
+        return this.api.forwardMessages(chat_id, orThrow(this.chatId, "forwardMessages"), message_ids, {
+            direct_messages_topic_id: (_a = msg === null || msg === void 0 ? void 0 : msg.direct_messages_topic) === null || _a === void 0 ? void 0 : _a.topic_id,
+            ...other,
+        }, signal);
     }
     /**
-     * Context-aware alias for `api.copyMessage`. Use this method to copy messages of any kind. Service messages, giveaway messages, giveaway winners messages, and invoice messages can't be copied. A quiz poll can be copied only if the value of the field correct_option_id is known to the bot. The method is analogous to the method forwardMessage, but the copied message doesn't have a link to the original message. Returns the MessageId of the sent message on success.
+     * Context-aware alias for `api.copyMessage`. Use this method to copy messages of any kind. Service messages, paid media messages, giveaway messages, giveaway winners messages, and invoice messages can't be copied. A quiz poll can be copied only if the value of the field correct_option_id is known to the bot. The method is analogous to the method forwardMessage, but the copied message doesn't have a link to the original message. Returns the MessageId of the sent message on success.
      *
      * @param chat_id Unique identifier for the target chat or username of the target channel (in the format @channelusername)
      * @param other Optional remaining parameters, confer the official reference below
@@ -7199,10 +7391,15 @@ class Context {
      * **Official reference:** https://core.telegram.org/bots/api#copymessage
      */
     copyMessage(chat_id, other, signal) {
-        return this.api.copyMessage(chat_id, orThrow(this.chatId, "copyMessage"), orThrow(this.msgId, "copyMessage"), other, signal);
+        var _a;
+        const msg = this.msg;
+        return this.api.copyMessage(chat_id, orThrow(this.chatId, "copyMessage"), orThrow(this.msgId, "copyMessage"), {
+            direct_messages_topic_id: (_a = msg === null || msg === void 0 ? void 0 : msg.direct_messages_topic) === null || _a === void 0 ? void 0 : _a.topic_id,
+            ...other,
+        }, signal);
     }
     /**
-     * Context-aware alias for `api.copyMessages`.Use this method to copy messages of any kind. If some of the specified messages can't be found or copied, they are skipped. Service messages, giveaway messages, giveaway winners messages, and invoice messages can't be copied. A quiz poll can be copied only if the value of the field correct_option_id is known to the bot. The method is analogous to the method forwardMessages, but the copied messages don't have a link to the original message. Album grouping is kept for copied messages. On success, an array of MessageId of the sent messages is returned.
+     * Context-aware alias for `api.copyMessages`. Use this method to copy messages of any kind. If some of the specified messages can't be found or copied, they are skipped. Service messages, paid media messages, giveaway messages, giveaway winners messages, and invoice messages can't be copied. A quiz poll can be copied only if the value of the field correct_option_id is known to the bot. The method is analogous to the method forwardMessages, but the copied messages don't have a link to the original message. Album grouping is kept for copied messages. On success, an array of MessageId of the sent messages is returned.
      *
      * @param chat_id Unique identifier for the target chat or username of the target channel (in the format @channelusername)
      * @param message_ids A list of 1-100 identifiers of messages in the current chat to copy. The identifiers must be specified in a strictly increasing order.
@@ -7212,7 +7409,12 @@ class Context {
      * **Official reference:** https://core.telegram.org/bots/api#copymessages
      */
     copyMessages(chat_id, message_ids, other, signal) {
-        return this.api.copyMessages(chat_id, orThrow(this.chatId, "copyMessages"), message_ids, other, signal);
+        var _a;
+        const msg = this.msg;
+        return this.api.copyMessages(chat_id, orThrow(this.chatId, "copyMessages"), message_ids, {
+            direct_messages_topic_id: (_a = msg === null || msg === void 0 ? void 0 : msg.direct_messages_topic) === null || _a === void 0 ? void 0 : _a.topic_id,
+            ...other,
+        }, signal);
     }
     /**
      * Context-aware alias for `api.sendPhoto`. Use this method to send photos. On success, the sent Message is returned.
@@ -7224,7 +7426,16 @@ class Context {
      * **Official reference:** https://core.telegram.org/bots/api#sendphoto
      */
     replyWithPhoto(photo, other, signal) {
-        return this.api.sendPhoto(orThrow(this.chatId, "sendPhoto"), photo, { business_connection_id: this.businessConnectionId, ...other }, signal);
+        var _a;
+        const msg = this.msg;
+        return this.api.sendPhoto(orThrow(this.chatId, "sendPhoto"), photo, {
+            business_connection_id: this.businessConnectionId,
+            ...((msg === null || msg === void 0 ? void 0 : msg.is_topic_message)
+                ? { message_thread_id: msg.message_thread_id }
+                : {}),
+            direct_messages_topic_id: (_a = msg === null || msg === void 0 ? void 0 : msg.direct_messages_topic) === null || _a === void 0 ? void 0 : _a.topic_id,
+            ...other,
+        }, signal);
     }
     /**
      * Context-aware alias for `api.sendAudio`. Use this method to send audio files, if you want Telegram clients to display them in the music player. Your audio must be in the .MP3 or .M4A format. On success, the sent Message is returned. Bots can currently send audio files of up to 50 MB in size, this limit may be changed in the future.
@@ -7238,7 +7449,16 @@ class Context {
      * **Official reference:** https://core.telegram.org/bots/api#sendaudio
      */
     replyWithAudio(audio, other, signal) {
-        return this.api.sendAudio(orThrow(this.chatId, "sendAudio"), audio, { business_connection_id: this.businessConnectionId, ...other }, signal);
+        var _a;
+        const msg = this.msg;
+        return this.api.sendAudio(orThrow(this.chatId, "sendAudio"), audio, {
+            business_connection_id: this.businessConnectionId,
+            ...((msg === null || msg === void 0 ? void 0 : msg.is_topic_message)
+                ? { message_thread_id: msg.message_thread_id }
+                : {}),
+            direct_messages_topic_id: (_a = msg === null || msg === void 0 ? void 0 : msg.direct_messages_topic) === null || _a === void 0 ? void 0 : _a.topic_id,
+            ...other,
+        }, signal);
     }
     /**
      * Context-aware alias for `api.sendDocument`. Use this method to send general files. On success, the sent Message is returned. Bots can currently send files of any type of up to 50 MB in size, this limit may be changed in the future.
@@ -7250,7 +7470,16 @@ class Context {
      * **Official reference:** https://core.telegram.org/bots/api#senddocument
      */
     replyWithDocument(document, other, signal) {
-        return this.api.sendDocument(orThrow(this.chatId, "sendDocument"), document, { business_connection_id: this.businessConnectionId, ...other }, signal);
+        var _a;
+        const msg = this.msg;
+        return this.api.sendDocument(orThrow(this.chatId, "sendDocument"), document, {
+            business_connection_id: this.businessConnectionId,
+            ...((msg === null || msg === void 0 ? void 0 : msg.is_topic_message)
+                ? { message_thread_id: msg.message_thread_id }
+                : {}),
+            direct_messages_topic_id: (_a = msg === null || msg === void 0 ? void 0 : msg.direct_messages_topic) === null || _a === void 0 ? void 0 : _a.topic_id,
+            ...other,
+        }, signal);
     }
     /**
      * Context-aware alias for `api.sendVideo`. Use this method to send video files, Telegram clients support mp4 videos (other formats may be sent as Document). On success, the sent Message is returned. Bots can currently send video files of up to 50 MB in size, this limit may be changed in the future.
@@ -7262,7 +7491,16 @@ class Context {
      * **Official reference:** https://core.telegram.org/bots/api#sendvideo
      */
     replyWithVideo(video, other, signal) {
-        return this.api.sendVideo(orThrow(this.chatId, "sendVideo"), video, { business_connection_id: this.businessConnectionId, ...other }, signal);
+        var _a;
+        const msg = this.msg;
+        return this.api.sendVideo(orThrow(this.chatId, "sendVideo"), video, {
+            business_connection_id: this.businessConnectionId,
+            ...((msg === null || msg === void 0 ? void 0 : msg.is_topic_message)
+                ? { message_thread_id: msg.message_thread_id }
+                : {}),
+            direct_messages_topic_id: (_a = msg === null || msg === void 0 ? void 0 : msg.direct_messages_topic) === null || _a === void 0 ? void 0 : _a.topic_id,
+            ...other,
+        }, signal);
     }
     /**
      * Context-aware alias for `api.sendAnimation`. Use this method to send animation files (GIF or H.264/MPEG-4 AVC video without sound). On success, the sent Message is returned. Bots can currently send animation files of up to 50 MB in size, this limit may be changed in the future.
@@ -7274,7 +7512,16 @@ class Context {
      * **Official reference:** https://core.telegram.org/bots/api#sendanimation
      */
     replyWithAnimation(animation, other, signal) {
-        return this.api.sendAnimation(orThrow(this.chatId, "sendAnimation"), animation, { business_connection_id: this.businessConnectionId, ...other }, signal);
+        var _a;
+        const msg = this.msg;
+        return this.api.sendAnimation(orThrow(this.chatId, "sendAnimation"), animation, {
+            business_connection_id: this.businessConnectionId,
+            ...((msg === null || msg === void 0 ? void 0 : msg.is_topic_message)
+                ? { message_thread_id: msg.message_thread_id }
+                : {}),
+            direct_messages_topic_id: (_a = msg === null || msg === void 0 ? void 0 : msg.direct_messages_topic) === null || _a === void 0 ? void 0 : _a.topic_id,
+            ...other,
+        }, signal);
     }
     /**
      * Context-aware alias for `api.sendVoice`. Use this method to send audio files, if you want Telegram clients to display the file as a playable voice message. For this to work, your audio must be in an .OGG file encoded with OPUS (other formats may be sent as Audio or Document). On success, the sent Message is returned. Bots can currently send voice messages of up to 50 MB in size, this limit may be changed in the future.
@@ -7286,7 +7533,16 @@ class Context {
      * **Official reference:** https://core.telegram.org/bots/api#sendvoice
      */
     replyWithVoice(voice, other, signal) {
-        return this.api.sendVoice(orThrow(this.chatId, "sendVoice"), voice, { business_connection_id: this.businessConnectionId, ...other }, signal);
+        var _a;
+        const msg = this.msg;
+        return this.api.sendVoice(orThrow(this.chatId, "sendVoice"), voice, {
+            business_connection_id: this.businessConnectionId,
+            ...((msg === null || msg === void 0 ? void 0 : msg.is_topic_message)
+                ? { message_thread_id: msg.message_thread_id }
+                : {}),
+            direct_messages_topic_id: (_a = msg === null || msg === void 0 ? void 0 : msg.direct_messages_topic) === null || _a === void 0 ? void 0 : _a.topic_id,
+            ...other,
+        }, signal);
     }
     /**
      * Context-aware alias for `api.sendVideoNote`. Use this method to send video messages. On success, the sent Message is returned.
@@ -7299,7 +7555,16 @@ class Context {
      * **Official reference:** https://core.telegram.org/bots/api#sendvideonote
      */
     replyWithVideoNote(video_note, other, signal) {
-        return this.api.sendVideoNote(orThrow(this.chatId, "sendVideoNote"), video_note, { business_connection_id: this.businessConnectionId, ...other }, signal);
+        var _a;
+        const msg = this.msg;
+        return this.api.sendVideoNote(orThrow(this.chatId, "sendVideoNote"), video_note, {
+            business_connection_id: this.businessConnectionId,
+            ...((msg === null || msg === void 0 ? void 0 : msg.is_topic_message)
+                ? { message_thread_id: msg.message_thread_id }
+                : {}),
+            direct_messages_topic_id: (_a = msg === null || msg === void 0 ? void 0 : msg.direct_messages_topic) === null || _a === void 0 ? void 0 : _a.topic_id,
+            ...other,
+        }, signal);
     }
     /**
      * Context-aware alias for `api.sendMediaGroup`. Use this method to send a group of photos, videos, documents or audios as an album. Documents and audio files can be only grouped in an album with messages of the same type. On success, an array of Messages that were sent is returned.
@@ -7311,7 +7576,16 @@ class Context {
      * **Official reference:** https://core.telegram.org/bots/api#sendmediagroup
      */
     replyWithMediaGroup(media, other, signal) {
-        return this.api.sendMediaGroup(orThrow(this.chatId, "sendMediaGroup"), media, { business_connection_id: this.businessConnectionId, ...other }, signal);
+        var _a;
+        const msg = this.msg;
+        return this.api.sendMediaGroup(orThrow(this.chatId, "sendMediaGroup"), media, {
+            business_connection_id: this.businessConnectionId,
+            ...((msg === null || msg === void 0 ? void 0 : msg.is_topic_message)
+                ? { message_thread_id: msg.message_thread_id }
+                : {}),
+            direct_messages_topic_id: (_a = msg === null || msg === void 0 ? void 0 : msg.direct_messages_topic) === null || _a === void 0 ? void 0 : _a.topic_id,
+            ...other,
+        }, signal);
     }
     /**
      * Context-aware alias for `api.sendLocation`. Use this method to send point on the map. On success, the sent Message is returned.
@@ -7324,7 +7598,16 @@ class Context {
      * **Official reference:** https://core.telegram.org/bots/api#sendlocation
      */
     replyWithLocation(latitude, longitude, other, signal) {
-        return this.api.sendLocation(orThrow(this.chatId, "sendLocation"), latitude, longitude, { business_connection_id: this.businessConnectionId, ...other }, signal);
+        var _a;
+        const msg = this.msg;
+        return this.api.sendLocation(orThrow(this.chatId, "sendLocation"), latitude, longitude, {
+            business_connection_id: this.businessConnectionId,
+            ...((msg === null || msg === void 0 ? void 0 : msg.is_topic_message)
+                ? { message_thread_id: msg.message_thread_id }
+                : {}),
+            direct_messages_topic_id: (_a = msg === null || msg === void 0 ? void 0 : msg.direct_messages_topic) === null || _a === void 0 ? void 0 : _a.topic_id,
+            ...other,
+        }, signal);
     }
     /**
      * Context-aware alias for `api.editMessageLiveLocation`. Use this method to edit live location messages. A location can be edited until its live_period expires or editing is explicitly disabled by a call to stopMessageLiveLocation. On success, if the edited message is not an inline message, the edited Message is returned, otherwise True is returned.
@@ -7339,8 +7622,8 @@ class Context {
     editMessageLiveLocation(latitude, longitude, other, signal) {
         const inlineId = this.inlineMessageId;
         return inlineId !== undefined
-            ? this.api.editMessageLiveLocationInline(inlineId, latitude, longitude, other)
-            : this.api.editMessageLiveLocation(orThrow(this.chatId, "editMessageLiveLocation"), orThrow(this.msgId, "editMessageLiveLocation"), latitude, longitude, other, signal);
+            ? this.api.editMessageLiveLocationInline(inlineId, latitude, longitude, { business_connection_id: this.businessConnectionId, ...other }, signal)
+            : this.api.editMessageLiveLocation(orThrow(this.chatId, "editMessageLiveLocation"), orThrow(this.msgId, "editMessageLiveLocation"), latitude, longitude, { business_connection_id: this.businessConnectionId, ...other }, signal);
     }
     /**
      * Context-aware alias for `api.stopMessageLiveLocation`. Use this method to stop updating a live location message before live_period expires. On success, if the message is not an inline message, the edited Message is returned, otherwise True is returned.
@@ -7353,8 +7636,30 @@ class Context {
     stopMessageLiveLocation(other, signal) {
         const inlineId = this.inlineMessageId;
         return inlineId !== undefined
-            ? this.api.stopMessageLiveLocationInline(inlineId, other)
-            : this.api.stopMessageLiveLocation(orThrow(this.chatId, "stopMessageLiveLocation"), orThrow(this.msgId, "stopMessageLiveLocation"), other, signal);
+            ? this.api.stopMessageLiveLocationInline(inlineId, { business_connection_id: this.businessConnectionId, ...other }, signal)
+            : this.api.stopMessageLiveLocation(orThrow(this.chatId, "stopMessageLiveLocation"), orThrow(this.msgId, "stopMessageLiveLocation"), { business_connection_id: this.businessConnectionId, ...other }, signal);
+    }
+    /**
+     * Context-aware alias for `api.sendPaidMedia`. Use this method to send paid media. On success, the sent Message is returned.
+     *
+     * @param star_count The number of Telegram Stars that must be paid to buy access to the media
+     * @param media An array describing the media to be sent; up to 10 items
+     * @param other Optional remaining parameters, confer the official reference below
+     * @param signal Optional `AbortSignal` to cancel the request
+     *
+     * **Official reference:** https://core.telegram.org/bots/api#sendpaidmedia
+     */
+    sendPaidMedia(star_count, media, other, signal) {
+        var _a, _b;
+        const msg = this.msg;
+        return this.api.sendPaidMedia(orThrow(this.chatId, "sendPaidMedia"), star_count, media, {
+            business_connection_id: this.businessConnectionId,
+            ...((msg === null || msg === void 0 ? void 0 : msg.is_topic_message)
+                ? { message_thread_id: msg.message_thread_id }
+                : {}),
+            direct_messages_topic_id: (_b = (_a = this.msg) === null || _a === void 0 ? void 0 : _a.direct_messages_topic) === null || _b === void 0 ? void 0 : _b.topic_id,
+            ...other,
+        }, signal);
     }
     /**
      * Context-aware alias for `api.sendVenue`. Use this method to send information about a venue. On success, the sent Message is returned.
@@ -7369,7 +7674,16 @@ class Context {
      * **Official reference:** https://core.telegram.org/bots/api#sendvenue
      */
     replyWithVenue(latitude, longitude, title, address, other, signal) {
-        return this.api.sendVenue(orThrow(this.chatId, "sendVenue"), latitude, longitude, title, address, { business_connection_id: this.businessConnectionId, ...other }, signal);
+        var _a;
+        const msg = this.msg;
+        return this.api.sendVenue(orThrow(this.chatId, "sendVenue"), latitude, longitude, title, address, {
+            business_connection_id: this.businessConnectionId,
+            ...((msg === null || msg === void 0 ? void 0 : msg.is_topic_message)
+                ? { message_thread_id: msg.message_thread_id }
+                : {}),
+            direct_messages_topic_id: (_a = msg === null || msg === void 0 ? void 0 : msg.direct_messages_topic) === null || _a === void 0 ? void 0 : _a.topic_id,
+            ...other,
+        }, signal);
     }
     /**
      * Context-aware alias for `api.sendContact`. Use this method to send phone contacts. On success, the sent Message is returned.
@@ -7382,32 +7696,84 @@ class Context {
      * **Official reference:** https://core.telegram.org/bots/api#sendcontact
      */
     replyWithContact(phone_number, first_name, other, signal) {
-        return this.api.sendContact(orThrow(this.chatId, "sendContact"), phone_number, first_name, { business_connection_id: this.businessConnectionId, ...other }, signal);
+        var _a;
+        const msg = this.msg;
+        return this.api.sendContact(orThrow(this.chatId, "sendContact"), phone_number, first_name, {
+            business_connection_id: this.businessConnectionId,
+            ...((msg === null || msg === void 0 ? void 0 : msg.is_topic_message)
+                ? { message_thread_id: msg.message_thread_id }
+                : {}),
+            direct_messages_topic_id: (_a = msg === null || msg === void 0 ? void 0 : msg.direct_messages_topic) === null || _a === void 0 ? void 0 : _a.topic_id,
+            ...other,
+        }, signal);
     }
     /**
      * Context-aware alias for `api.sendPoll`. Use this method to send a native poll. On success, the sent Message is returned.
      *
      * @param question Poll question, 1-300 characters
-     * @param options A list of answer options, 2-10 strings 1-100 characters each
+     * @param options A list of answer options, 2-12 strings 1-100 characters each
      * @param other Optional remaining parameters, confer the official reference below
      * @param signal Optional `AbortSignal` to cancel the request
      *
      * **Official reference:** https://core.telegram.org/bots/api#sendpoll
      */
     replyWithPoll(question, options, other, signal) {
-        return this.api.sendPoll(orThrow(this.chatId, "sendPoll"), question, options, { business_connection_id: this.businessConnectionId, ...other }, signal);
+        const msg = this.msg;
+        return this.api.sendPoll(orThrow(this.chatId, "sendPoll"), question, options, {
+            business_connection_id: this.businessConnectionId,
+            ...((msg === null || msg === void 0 ? void 0 : msg.is_topic_message)
+                ? { message_thread_id: msg.message_thread_id }
+                : {}),
+            ...other,
+        }, signal);
+    }
+    /**
+     * Context-aware alias for `api.sendChecklist`. Use this method to send a checklist on behalf of a connected business account. On success, the sent Message is returned.
+     *
+     * @param checklist An object for the checklist to send
+     * @param other Optional remaining parameters, confer the official reference below
+     * @param signal Optional `AbortSignal` to cancel the request
+     *
+     * **Official reference:** https://core.telegram.org/bots/api#sendchecklist
+     */
+    replyWithChecklist(checklist, other, signal) {
+        return this.api.sendChecklist(orThrow(this.businessConnectionId, "sendChecklist"), orThrow(this.chatId, "sendChecklist"), checklist, other, signal);
+    }
+    /**
+     * Context-aware alias for `api.editMessageChecklist`. Use this method to edit a checklist on behalf of a connected business account. On success, the edited Message is returned.
+     *
+     * @param checklist An object for the new checklist
+     * @param other Optional remaining parameters, confer the official reference below
+     * @param signal Optional `AbortSignal` to cancel the request
+     *
+     * **Official reference:** https://core.telegram.org/bots/api#editmessagechecklist
+     */
+    editMessageChecklist(checklist, other, signal) {
+        var _a, _b, _c, _d;
+        const msg = orThrow(this.msg, "editMessageChecklist");
+        const target = (_d = (_b = (_a = msg.checklist_tasks_done) === null || _a === void 0 ? void 0 : _a.checklist_message) !== null && _b !== void 0 ? _b : (_c = msg.checklist_tasks_added) === null || _c === void 0 ? void 0 : _c.checklist_message) !== null && _d !== void 0 ? _d : msg;
+        return this.api.editMessageChecklist(orThrow(this.businessConnectionId, "editMessageChecklist"), orThrow(target.chat.id, "editMessageChecklist"), orThrow(target.message_id, "editMessageChecklist"), checklist, other, signal);
     }
     /**
      * Context-aware alias for `api.sendDice`. Use this method to send an animated emoji that will display a random value. On success, the sent Message is returned.
      *
-     * @param emoji Emoji on which the dice throw animation is based. Currently, must be one of “🎲”, “🎯”, “🏀”, “⚽”, or “🎰”. Dice can have values 1-6 for “🎲” and “🎯”, values 1-5 for “🏀” and “⚽”, and values 1-64 for “🎰”. Defaults to “🎲”
+     * @param emoji Emoji on which the dice throw animation is based. Currently, must be one of “🎲”, “🎯”, “🏀”, “⚽”, “🎳”, or “🎰”. Dice can have values 1-6 for “🎲”, “🎯” and “🎳”, values 1-5 for “🏀” and “⚽”, and values 1-64 for “🎰”. Defaults to “🎲”
      * @param other Optional remaining parameters, confer the official reference below
      * @param signal Optional `AbortSignal` to cancel the request
      *
      * **Official reference:** https://core.telegram.org/bots/api#senddice
      */
     replyWithDice(emoji, other, signal) {
-        return this.api.sendDice(orThrow(this.chatId, "sendDice"), emoji, { business_connection_id: this.businessConnectionId, ...other }, signal);
+        var _a;
+        const msg = this.msg;
+        return this.api.sendDice(orThrow(this.chatId, "sendDice"), emoji, {
+            business_connection_id: this.businessConnectionId,
+            ...((msg === null || msg === void 0 ? void 0 : msg.is_topic_message)
+                ? { message_thread_id: msg.message_thread_id }
+                : {}),
+            direct_messages_topic_id: (_a = msg === null || msg === void 0 ? void 0 : msg.direct_messages_topic) === null || _a === void 0 ? void 0 : _a.topic_id,
+            ...other,
+        }, signal);
     }
     /**
      * Context-aware alias for `api.sendChatAction`. Use this method when you need to tell the user that something is happening on the bot's side. The status is set for 5 seconds or less (when a message arrives from your bot, Telegram clients clear its typing status). Returns True on success.
@@ -7423,12 +7789,17 @@ class Context {
      * **Official reference:** https://core.telegram.org/bots/api#sendchataction
      */
     replyWithChatAction(action, other, signal) {
-        return this.api.sendChatAction(orThrow(this.chatId, "sendChatAction"), action, { business_connection_id: this.businessConnectionId, ...other }, signal);
+        const msg = this.msg;
+        return this.api.sendChatAction(orThrow(this.chatId, "sendChatAction"), action, {
+            business_connection_id: this.businessConnectionId,
+            message_thread_id: msg === null || msg === void 0 ? void 0 : msg.message_thread_id,
+            ...other,
+        }, signal);
     }
     /**
-     * Context-aware alias for `api.setMessageReaction`. Use this method to change the chosen reactions on a message. Service messages can't be reacted to. Automatically forwarded messages from a channel to its discussion group have the same available reactions as messages in the channel. In albums, bots must react to the first message. Returns True on success.
+     * Context-aware alias for `api.setMessageReaction`. Use this method to change the chosen reactions on a message. Service messages of some types can't be reacted to. Automatically forwarded messages from a channel to its discussion group have the same available reactions as messages in the channel. Bots can't use paid reactions. Returns True on success.
      *
-     * @param reaction A list of reaction types to set on the message. Currently, as non-premium users, bots can set up to one reaction per message. A custom emoji reaction can be used if it is either already present on the message or explicitly allowed by chat administrators.
+     * @param reaction A list of reaction types to set on the message. Currently, as non-premium users, bots can set up to one reaction per message. A custom emoji reaction can be used if it is either already present on the message or explicitly allowed by chat administrators. Paid reactions can't be used by bots.
      * @param other Optional remaining parameters, confer the official reference below
      * @param signal Optional `AbortSignal` to cancel the request
      *
@@ -7445,7 +7816,6 @@ class Context {
     /**
      * Context-aware alias for `api.getUserProfilePhotos`. Use this method to get a list of profile pictures for a user. Returns a UserProfilePhotos object.
      *
-     * @param user_id Unique identifier of the target user
      * @param other Optional remaining parameters, confer the official reference below
      * @param signal Optional `AbortSignal` to cancel the request
      *
@@ -7453,6 +7823,28 @@ class Context {
      */
     getUserProfilePhotos(other, signal) {
         return this.api.getUserProfilePhotos(orThrow(this.from, "getUserProfilePhotos").id, other, signal);
+    }
+    /**
+     * Context-aware alias for `api.getUserProfileAudios`. Use this method to get a list of profile audios for a user. Returns a UserProfileAudios object.
+     *
+     * @param other Optional remaining parameters, confer the official reference below
+     * @param signal Optional `AbortSignal` to cancel the request
+     *
+     * **Official reference:** https://core.telegram.org/bots/api#getuserprofileaudios
+     */
+    getUserProfileAudios(other, signal) {
+        return this.api.getUserProfileAudios(orThrow(this.from, "getUserProfileAudios").id, other, signal);
+    }
+    /**
+     * Context-aware alias for `api.serUserEmojiStatus`. Changes the emoji status for a given user that previously allowed the bot to manage their emoji status via the Mini App method requestEmojiStatusAccess. Returns True on success.
+     *
+     * @param other Optional remaining parameters, confer the official reference below
+     * @param signal Optional `AbortSignal` to cancel the request
+     *
+     * **Official reference:** https://core.telegram.org/bots/api#setuseremojistatus
+     */
+    setUserEmojiStatus(other, signal) {
+        return this.api.setUserEmojiStatus(orThrow(this.from, "setUserEmojiStatus").id, other, signal);
     }
     /**
      * Context-aware alias for `api.getUserChatBoosts`. Use this method to get the list of boosts added to a chat by a user. Requires administrator rights in the chat. Returns a UserChatBoosts object.
@@ -7463,10 +7855,32 @@ class Context {
      * **Official reference:** https://core.telegram.org/bots/api#getuserchatboosts
      */
     getUserChatBoosts(chat_id, signal) {
-        return this.api.getUserChatBoosts(chat_id, orThrow(this.from, "getUserChatBoosts").id, signal);
+        return this.api.getUserChatBoosts(chat_id !== null && chat_id !== void 0 ? chat_id : orThrow(this.chatId, "getUserChatBoosts"), orThrow(this.from, "getUserChatBoosts").id, signal);
     }
     /**
-     *  Context-aware alias for `api.getBusinessConnection`. Use this method to get information about the connection of the bot with a business account. Returns a BusinessConnection object on success.
+     * Context-aware alias for `api.getUserGifts`. Returns the gifts owned and hosted by a user. Returns OwnedGifts on success.
+     *
+     * @param other Optional remaining parameters, confer the official reference below
+     * @param signal Optional `AbortSignal` to cancel the request
+     *
+     * **Official reference:** https://core.telegram.org/bots/api#getusergifts
+     */
+    getUserGifts(other, signal) {
+        return this.api.getUserGifts(orThrow(this.from, "getUserGifts").id, other, signal);
+    }
+    /**
+     * Context-aware alias for `api.getChatGifts`. Returns the gifts owned by a chat. Returns OwnedGifts on success.
+     *
+     * @param other Optional remaining parameters, confer the official reference below
+     * @param signal Optional `AbortSignal` to cancel the request
+     *
+     * **Official reference:** https://core.telegram.org/bots/api#getchatgifts
+     */
+    getChatGifts(other, signal) {
+        return this.api.getChatGifts(orThrow(this.chatId, "getChatGifts"), other, signal);
+    }
+    /**
+     * Context-aware alias for `api.getBusinessConnection`. Use this method to get information about the connection of the bot with a business account. Returns a BusinessConnection object on success.
      * @param signal Optional `AbortSignal` to cancel the request
      *
      * **Official reference:** https://core.telegram.org/bots/api#getbusinessconnection
@@ -7606,6 +8020,29 @@ class Context {
         return this.api.setChatAdministratorCustomTitle(orThrow(this.chatId, "setChatAdministratorCustomTitle"), user_id, custom_title, signal);
     }
     /**
+     * Context-aware alias for `api.setChatMemberTag`. Use this method to set a tag for a regular member in a group or a supergroup. The bot must be an administrator in the chat for this to work and must have the “can_manage_tags” administrator right. Returns True on success.
+     *
+     * @param tag New tag for the member; 0-16 characters, emoji are not allowed
+     * @param signal Optional `AbortSignal` to cancel the request
+     *
+     * **Official reference:** https://core.telegram.org/bots/api#setChatMemberTag
+     */
+    setAuthorTag(tag, signal) {
+        return this.api.setChatMemberTag(orThrow(this.chatId, "setChatMemberTag"), orThrow(this.from, "setChatMemberTag").id, tag, signal);
+    }
+    /**
+     * Context-aware alias for `api.setChatMemberTag`. Use this method to set a tag for a regular member in a group or a supergroup. The bot must be an administrator in the chat for this to work and must have the “can_manage_tags” administrator right. Returns True on success.
+     *
+     * @param user_id Unique identifier of the target user
+     * @param tag New tag for the member; 0-16 characters, emoji are not allowed
+     * @param signal Optional `AbortSignal` to cancel the request
+     *
+     * **Official reference:** https://core.telegram.org/bots/api#setChatMemberTag
+     */
+    setChatMemberTag(user_id, tag, signal) {
+        return this.api.setChatMemberTag(orThrow(this.chatId, "setChatMemberTag"), user_id, tag, signal);
+    }
+    /**
      * Context-aware alias for `api.banChatSenderChat`. Use this method to ban a channel chat in a supergroup or a channel. Until the chat is unbanned, the owner of the banned chat won't be able to send messages on behalf of any of their channels. The bot must be an administrator in the supergroup or channel for this to work and must have the appropriate administrator rights. Returns True on success.
      *
      * @param sender_chat_id Unique identifier of the target sender chat
@@ -7631,12 +8068,13 @@ class Context {
      * Context-aware alias for `api.setChatPermissions`. Use this method to set default chat permissions for all members. The bot must be an administrator in the group or a supergroup for this to work and must have the can_restrict_members administrator rights. Returns True on success.
      *
      * @param permissions New default chat permissions
+     * @param other Optional remaining parameters, confer the official reference below
      * @param signal Optional `AbortSignal` to cancel the request
      *
      * **Official reference:** https://core.telegram.org/bots/api#setchatpermissions
      */
-    setChatPermissions(permissions, signal) {
-        return this.api.setChatPermissions(orThrow(this.chatId, "setChatPermissions"), permissions, signal);
+    setChatPermissions(permissions, other, signal) {
+        return this.api.setChatPermissions(orThrow(this.chatId, "setChatPermissions"), permissions, other, signal);
     }
     /**
      * Context-aware alias for `api.exportChatInviteLink`. Use this method to generate a new primary invite link for a chat; any previously generated primary link is revoked. The bot must be an administrator in the chat for this to work and must have the appropriate administrator rights. Returns the new invite link as String on success.
@@ -7662,7 +8100,7 @@ class Context {
         return this.api.createChatInviteLink(orThrow(this.chatId, "createChatInviteLink"), other, signal);
     }
     /**
-     *  Context-aware alias for `api.editChatInviteLink`. Use this method to edit a non-primary invite link created by the bot. The bot must be an administrator in the chat for this to work and must have the appropriate administrator rights. Returns the edited invite link as a ChatInviteLink object.
+     * Context-aware alias for `api.editChatInviteLink`. Use this method to edit a non-primary invite link created by the bot. The bot must be an administrator in the chat for this to work and must have the appropriate administrator rights. Returns the edited invite link as a ChatInviteLink object.
      *
      * @param invite_link The invite link to edit
      * @param other Optional remaining parameters, confer the official reference below
@@ -7674,7 +8112,32 @@ class Context {
         return this.api.editChatInviteLink(orThrow(this.chatId, "editChatInviteLink"), invite_link, other, signal);
     }
     /**
-     *  Context-aware alias for `api.revokeChatInviteLink`. Use this method to revoke an invite link created by the bot. If the primary link is revoked, a new link is automatically generated. The bot must be an administrator in the chat for this to work and must have the appropriate administrator rights. Returns the revoked invite link as ChatInviteLink object.
+     * Context-aware alias for `api.createChatSubscriptionInviteLink`. Use this method to create a subscription invite link for a channel chat. The bot must have the can_invite_users administrator rights. The link can be edited using the method editChatSubscriptionInviteLink or revoked using the method revokeChatInviteLink. Returns the new invite link as a ChatInviteLink object.
+     *
+     * @param subscription_period The number of seconds the subscription will be active for before the next payment. Currently, it must always be 2592000 (30 days).
+     * @param subscription_price The amount of Telegram Stars a user must pay initially and after each subsequent subscription period to be a member of the chat; 1-2500
+     * @param other Optional remaining parameters, confer the official reference below
+     * @param signal Optional `AbortSignal` to cancel the request
+     *
+     * **Official reference:** https://core.telegram.org/bots/api#createchatsubscriptioninvitelink
+     */
+    createChatSubscriptionInviteLink(subscription_period, subscription_price, other, signal) {
+        return this.api.createChatSubscriptionInviteLink(orThrow(this.chatId, "createChatSubscriptionInviteLink"), subscription_period, subscription_price, other, signal);
+    }
+    /**
+     * Context-aware alias for `api.editChatSubscriptionInviteLink`. Use this method to edit a subscription invite link created by the bot. The bot must have the can_invite_users administrator rights. Returns the edited invite link as a ChatInviteLink object.
+     *
+     * @param invite_link The invite link to edit
+     * @param other Optional remaining parameters, confer the official reference below
+     * @param signal Optional `AbortSignal` to cancel the request
+     *
+     * **Official reference:** https://core.telegram.org/bots/api#editchatsubscriptioninvitelink
+     */
+    editChatSubscriptionInviteLink(invite_link, other, signal) {
+        return this.api.editChatSubscriptionInviteLink(orThrow(this.chatId, "editChatSubscriptionInviteLink"), invite_link, other, signal);
+    }
+    /**
+     * Context-aware alias for `api.revokeChatInviteLink`. Use this method to revoke an invite link created by the bot. If the primary link is revoked, a new link is automatically generated. The bot must be an administrator in the chat for this to work and must have the appropriate administrator rights. Returns the revoked invite link as ChatInviteLink object.
      *
      * @param invite_link The invite link to revoke
      * @param signal Optional `AbortSignal` to cancel the request
@@ -7705,6 +8168,28 @@ class Context {
      */
     declineChatJoinRequest(user_id, signal) {
         return this.api.declineChatJoinRequest(orThrow(this.chatId, "declineChatJoinRequest"), user_id, signal);
+    }
+    /**
+     * Context-aware alias for `api.approveSuggestedPost`. Use this method to approve a suggested post in a direct messages chat. The bot must have the 'can_post_messages' administrator right in the corresponding channel chat.  Returns True on success.
+     *
+     * @param other Optional remaining parameters, confer the official reference below
+     * @param signal Optional `AbortSignal` to cancel the request
+     *
+     * **Official reference:** https://core.telegram.org/bots/api#approvesuggestedpost
+     */
+    approveSuggestedPost(other, signal) {
+        return this.api.approveSuggestedPost(orThrow(this.chatId, "approveSuggestedPost"), orThrow(this.msgId, "approveSuggestedPost"), other, signal);
+    }
+    /**
+     * Context-aware alias for `api.declineSuggestedPost`. Use this method to decline a suggested post in a direct messages chat. The bot must have the 'can_manage_direct_messages' administrator right in the corresponding channel chat. Returns True on success.
+     *
+     * @param other Optional remaining parameters, confer the official reference below
+     * @param signal Optional `AbortSignal` to cancel the request
+     *
+     * **Official reference:** https://core.telegram.org/bots/api#declinesuggestedpost
+     */
+    declineSuggestedPost(other, signal) {
+        return this.api.declineSuggestedPost(orThrow(this.chatId, "declineSuggestedPost"), orThrow(this.msgId, "declineSuggestedPost"), other, signal);
     }
     /**
      * Context-aware alias for `api.setChatPhoto`. Use this method to set a new profile photo for the chat. Photos can't be changed for private chats. The bot must be an administrator in the chat for this to work and must have the appropriate administrator rights. Returns True on success.
@@ -7750,7 +8235,7 @@ class Context {
         return this.api.setChatDescription(orThrow(this.chatId, "setChatDescription"), description, signal);
     }
     /**
-     * Context-aware alias for `api.pinChatMessage`. Use this method to add a message to the list of pinned messages in a chat. If the chat is not a private chat, the bot must be an administrator in the chat for this to work and must have the 'can_pin_messages' administrator right in a supergroup or 'can_edit_messages' administrator right in a channel. Returns True on success.
+     * Context-aware alias for `api.pinChatMessage`. Use this method to add a message to the list of pinned messages in a chat. In private chats and channel direct messages chats, all non-service messages can be pinned. Conversely, the bot must be an administrator with the 'can_pin_messages' right or the 'can_edit_messages' right to pin messages in groups and channels respectively. Returns True on success.
      *
      * @param message_id Identifier of a message to pin
      * @param other Optional remaining parameters, confer the official reference below
@@ -7759,21 +8244,22 @@ class Context {
      * **Official reference:** https://core.telegram.org/bots/api#pinchatmessage
      */
     pinChatMessage(message_id, other, signal) {
-        return this.api.pinChatMessage(orThrow(this.chatId, "pinChatMessage"), message_id, other, signal);
+        return this.api.pinChatMessage(orThrow(this.chatId, "pinChatMessage"), message_id, { business_connection_id: this.businessConnectionId, ...other }, signal);
     }
     /**
-     * Context-aware alias for `api.unpinChatMessage`. Use this method to remove a message from the list of pinned messages in a chat. If the chat is not a private chat, the bot must be an administrator in the chat for this to work and must have the 'can_pin_messages' administrator right in a supergroup or 'can_edit_messages' administrator right in a channel. Returns True on success.
+     * Context-aware alias for `api.unpinChatMessage`. Use this method to remove a message from the list of pinned messages in a chat. In private chats and channel direct messages chats, all messages can be unpinned. Conversely, the bot must be an administrator with the 'can_pin_messages' right or the 'can_edit_messages' right to unpin messages in groups and channels respectively. Returns True on success.
      *
      * @param message_id Identifier of a message to unpin. If not specified, the most recent pinned message (by sending date) will be unpinned.
+     * @param other Optional remaining parameters, confer the official reference below
      * @param signal Optional `AbortSignal` to cancel the request
      *
      * **Official reference:** https://core.telegram.org/bots/api#unpinchatmessage
      */
-    unpinChatMessage(message_id, signal) {
-        return this.api.unpinChatMessage(orThrow(this.chatId, "unpinChatMessage"), message_id, signal);
+    unpinChatMessage(message_id, other, signal) {
+        return this.api.unpinChatMessage(orThrow(this.chatId, "unpinChatMessage"), message_id, { business_connection_id: this.businessConnectionId, ...other }, signal);
     }
     /**
-     * Context-aware alias for `api.unpinAllChatMessages`. Use this method to clear the list of pinned messages in a chat. If the chat is not a private chat, the bot must be an administrator in the chat for this to work and must have the 'can_pin_messages' administrator right in a supergroup or 'can_edit_messages' administrator right in a channel. Returns True on success.
+     * Context-aware alias for `api.unpinAllChatMessages`. Use this method to clear the list of pinned messages in a chat. In private chats and channel direct messages chats, no additional rights are required to unpin all pinned messages. Conversely, the bot must be an administrator with the 'can_pin_messages' right or the 'can_edit_messages' right to unpin all pinned messages in groups and channels respectively. Returns True on success.
      *
      * @param signal Optional `AbortSignal` to cancel the request
      *
@@ -7812,7 +8298,7 @@ class Context {
     getChatAdministrators(signal) {
         return this.api.getChatAdministrators(orThrow(this.chatId, "getChatAdministrators"), signal);
     }
-    /** @deprecated Use `getChatMembersCount` instead. */
+    /** @deprecated Use `getChatMemberCount` instead. */
     getChatMembersCount(...args) {
         return this.getChatMemberCount(...args);
     }
@@ -7869,7 +8355,7 @@ class Context {
         return this.api.deleteChatStickerSet(orThrow(this.chatId, "deleteChatStickerSet"), signal);
     }
     /**
-     * Context-aware alias for `api.createForumTopic`. Use this method to create a topic in a forum supergroup chat. The bot must be an administrator in the chat for this to work and must have the can_manage_topics administrator rights. Returns information about the created topic as a ForumTopic object.
+     * Context-aware alias for `api.createForumTopic`. Use this method to create a topic in a forum supergroup chat or a private chat with a user. In the case of a supergroup chat the bot must be an administrator in the chat for this to work and must have the can_manage_topics administrator right. Returns information about the created topic as a ForumTopic object.
      *
      * @param name Topic name, 1-128 characters
      * @param other Optional remaining parameters, confer the official reference below
@@ -7881,7 +8367,7 @@ class Context {
         return this.api.createForumTopic(orThrow(this.chatId, "createForumTopic"), name, other, signal);
     }
     /**
-     * Context-aware alias for `api.editForumTopic`. Use this method to edit name and icon of a topic in a forum supergroup chat. The bot must be an administrator in the chat for this to work and must have can_manage_topics administrator rights, unless it is the creator of the topic. Returns True on success.
+     * Context-aware alias for `api.editForumTopic`. Use this method to edit name and icon of a topic in a forum supergroup chat or a private chat with a user. In the case of a supergroup chat the bot must be an administrator in the chat for this to work and must have the can_manage_topics administrator rights, unless it is the creator of the topic. Returns True on success.
      *
      * @param other Optional remaining parameters, confer the official reference below
      * @param signal Optional `AbortSignal` to cancel the request
@@ -7918,7 +8404,7 @@ class Context {
         return this.api.reopenForumTopic(message.chat.id, thread, signal);
     }
     /**
-     * Context-aware alias for `api.deleteForumTopic`. Use this method to delete a forum topic along with all its messages in a forum supergroup chat. The bot must be an administrator in the chat for this to work and must have the can_delete_messages administrator rights. Returns True on success.
+     * Context-aware alias for `api.deleteForumTopic`. Use this method to delete a forum topic along with all its messages in a forum supergroup chat or a private chat with a user. In the case of a supergroup chat the bot must be an administrator in the chat for this to work and must have the can_delete_messages administrator rights. Returns True on success.
      *
      * @param signal Optional `AbortSignal` to cancel the request
      *
@@ -7930,7 +8416,7 @@ class Context {
         return this.api.deleteForumTopic(message.chat.id, thread, signal);
     }
     /**
-     * Context-aware alias for `api.unpinAllForumTopicMessages`. Use this method to clear the list of pinned messages in a forum topic. The bot must be an administrator in the chat for this to work and must have the can_pin_messages administrator right in the supergroup. Returns True on success.
+     * Context-aware alias for `api.unpinAllForumTopicMessages`. Use this method to clear the list of pinned messages in a forum topic in a forum supergroup chat or a private chat with a user. In the case of a supergroup chat the bot must be an administrator in the chat for this to work and must have the can_pin_messages administrator right in the supergroup. Returns True on success.
      *
      * @param signal Optional `AbortSignal` to cancel the request
      *
@@ -7942,7 +8428,7 @@ class Context {
         return this.api.unpinAllForumTopicMessages(message.chat.id, thread, signal);
     }
     /**
-     * Context-aware alias for `api.editGeneralForumTopic`. Use this method to edit the name of the 'General' topic in a forum supergroup chat. The bot must be an administrator in the chat for this to work and must have can_manage_topics administrator rights. Returns True on success.
+     * Context-aware alias for `api.editGeneralForumTopic`. Use this method to edit the name of the 'General' topic in a forum supergroup chat. The bot must be an administrator in the chat for this to work and must have the can_manage_topics administrator rights. Returns True on success.
      *
      * @param name New topic name, 1-128 characters
      * @param signal Optional `AbortSignal` to cancel the request
@@ -8032,7 +8518,7 @@ class Context {
      * @param other Optional remaining parameters, confer the official reference below
      * @param signal Optional `AbortSignal` to cancel the request
      *
-     * **Official reference:** https://core.telegram.org/bots/api#setchatmenubutton
+     * **Official reference:** https://core.telegram.org/bots/api#getchatmenubutton
      */
     getChatMenuButton(other, signal) {
         return this.api.getChatMenuButton(other, signal);
@@ -8058,7 +8544,7 @@ class Context {
         return this.api.getMyDefaultAdministratorRights(other, signal);
     }
     /**
-     * Context-aware alias for `api.editMessageText`. Use this method to edit text and game messages. On success, if the edited message is not an inline message, the edited Message is returned, otherwise True is returned.
+     * Context-aware alias for `api.editMessageText`. Use this method to edit text and game messages. On success, if the edited message is not an inline message, the edited Message is returned, otherwise True is returned. Note that business messages that were not sent by the bot and do not contain an inline keyboard can only be edited within 48 hours from the time they were sent.
      *
      * @param text New text of the message, 1-4096 characters after entities parsing
      * @param other Optional remaining parameters, confer the official reference below
@@ -8070,11 +8556,11 @@ class Context {
         var _a, _b, _c, _d, _e;
         const inlineId = this.inlineMessageId;
         return inlineId !== undefined
-            ? this.api.editMessageTextInline(inlineId, text, other)
-            : this.api.editMessageText(orThrow(this.chatId, "editMessageText"), orThrow((_d = (_b = (_a = this.msg) === null || _a === void 0 ? void 0 : _a.message_id) !== null && _b !== void 0 ? _b : (_c = this.messageReaction) === null || _c === void 0 ? void 0 : _c.message_id) !== null && _d !== void 0 ? _d : (_e = this.messageReactionCount) === null || _e === void 0 ? void 0 : _e.message_id, "editMessageText"), text, other, signal);
+            ? this.api.editMessageTextInline(inlineId, text, { business_connection_id: this.businessConnectionId, ...other }, signal)
+            : this.api.editMessageText(orThrow(this.chatId, "editMessageText"), orThrow((_d = (_b = (_a = this.msg) === null || _a === void 0 ? void 0 : _a.message_id) !== null && _b !== void 0 ? _b : (_c = this.messageReaction) === null || _c === void 0 ? void 0 : _c.message_id) !== null && _d !== void 0 ? _d : (_e = this.messageReactionCount) === null || _e === void 0 ? void 0 : _e.message_id, "editMessageText"), text, { business_connection_id: this.businessConnectionId, ...other }, signal);
     }
     /**
-     * Context-aware alias for `api.editMessageCaption`. Use this method to edit captions of messages. On success, if the edited message is not an inline message, the edited Message is returned, otherwise True is returned.
+     * Context-aware alias for `api.editMessageCaption`. Use this method to edit captions of messages. On success, if the edited message is not an inline message, the edited Message is returned, otherwise True is returned. Note that business messages that were not sent by the bot and do not contain an inline keyboard can only be edited within 48 hours from the time they were sent.
      *
      * @param other Optional remaining parameters, confer the official reference below
      * @param signal Optional `AbortSignal` to cancel the request
@@ -8085,11 +8571,11 @@ class Context {
         var _a, _b, _c, _d, _e;
         const inlineId = this.inlineMessageId;
         return inlineId !== undefined
-            ? this.api.editMessageCaptionInline(inlineId, other)
-            : this.api.editMessageCaption(orThrow(this.chatId, "editMessageCaption"), orThrow((_d = (_b = (_a = this.msg) === null || _a === void 0 ? void 0 : _a.message_id) !== null && _b !== void 0 ? _b : (_c = this.messageReaction) === null || _c === void 0 ? void 0 : _c.message_id) !== null && _d !== void 0 ? _d : (_e = this.messageReactionCount) === null || _e === void 0 ? void 0 : _e.message_id, "editMessageCaption"), other, signal);
+            ? this.api.editMessageCaptionInline(inlineId, { business_connection_id: this.businessConnectionId, ...other }, signal)
+            : this.api.editMessageCaption(orThrow(this.chatId, "editMessageCaption"), orThrow((_d = (_b = (_a = this.msg) === null || _a === void 0 ? void 0 : _a.message_id) !== null && _b !== void 0 ? _b : (_c = this.messageReaction) === null || _c === void 0 ? void 0 : _c.message_id) !== null && _d !== void 0 ? _d : (_e = this.messageReactionCount) === null || _e === void 0 ? void 0 : _e.message_id, "editMessageCaption"), { business_connection_id: this.businessConnectionId, ...other }, signal);
     }
     /**
-     * Context-aware alias for `api.editMessageMedia`. Use this method to edit animation, audio, document, photo, or video messages. If a message is part of a message album, then it can be edited only to an audio for audio albums, only to a document for document albums and to a photo or a video otherwise. When an inline message is edited, a new file can't be uploaded; use a previously uploaded file via its file_id or specify a URL. On success, if the edited message is not an inline message, the edited Message is returned, otherwise True is returned.
+     * Context-aware alias for `api.editMessageMedia`. Use this method to edit animation, audio, document, photo, or video messages, or to add media to text messages. If a message is part of a message album, then it can be edited only to an audio for audio albums, only to a document for document albums and to a photo or a video otherwise. When an inline message is edited, a new file can't be uploaded; use a previously uploaded file via its file_id or specify a URL. On success, if the edited message is not an inline message, the edited Message is returned, otherwise True is returned. Note that business messages that were not sent by the bot and do not contain an inline keyboard can only be edited within 48 hours from the time they were sent.
      *
      * @param media An object for a new media content of the message
      * @param other Optional remaining parameters, confer the official reference below
@@ -8101,11 +8587,11 @@ class Context {
         var _a, _b, _c, _d, _e;
         const inlineId = this.inlineMessageId;
         return inlineId !== undefined
-            ? this.api.editMessageMediaInline(inlineId, media, other)
-            : this.api.editMessageMedia(orThrow(this.chatId, "editMessageMedia"), orThrow((_d = (_b = (_a = this.msg) === null || _a === void 0 ? void 0 : _a.message_id) !== null && _b !== void 0 ? _b : (_c = this.messageReaction) === null || _c === void 0 ? void 0 : _c.message_id) !== null && _d !== void 0 ? _d : (_e = this.messageReactionCount) === null || _e === void 0 ? void 0 : _e.message_id, "editMessageMedia"), media, other, signal);
+            ? this.api.editMessageMediaInline(inlineId, media, { business_connection_id: this.businessConnectionId, ...other }, signal)
+            : this.api.editMessageMedia(orThrow(this.chatId, "editMessageMedia"), orThrow((_d = (_b = (_a = this.msg) === null || _a === void 0 ? void 0 : _a.message_id) !== null && _b !== void 0 ? _b : (_c = this.messageReaction) === null || _c === void 0 ? void 0 : _c.message_id) !== null && _d !== void 0 ? _d : (_e = this.messageReactionCount) === null || _e === void 0 ? void 0 : _e.message_id, "editMessageMedia"), media, { business_connection_id: this.businessConnectionId, ...other }, signal);
     }
     /**
-     * Context-aware alias for `api.editMessageReplyMarkup`. Use this method to edit only the reply markup of messages. On success, if the edited message is not an inline message, the edited Message is returned, otherwise True is returned.
+     * Context-aware alias for `api.editMessageReplyMarkup`. Use this method to edit only the reply markup of messages. On success, if the edited message is not an inline message, the edited Message is returned, otherwise True is returned. Note that business messages that were not sent by the bot and do not contain an inline keyboard can only be edited within 48 hours from the time they were sent.
      *
      * @param other Optional remaining parameters, confer the official reference below
      * @param signal Optional `AbortSignal` to cancel the request
@@ -8116,8 +8602,8 @@ class Context {
         var _a, _b, _c, _d, _e;
         const inlineId = this.inlineMessageId;
         return inlineId !== undefined
-            ? this.api.editMessageReplyMarkupInline(inlineId, other)
-            : this.api.editMessageReplyMarkup(orThrow(this.chatId, "editMessageReplyMarkup"), orThrow((_d = (_b = (_a = this.msg) === null || _a === void 0 ? void 0 : _a.message_id) !== null && _b !== void 0 ? _b : (_c = this.messageReaction) === null || _c === void 0 ? void 0 : _c.message_id) !== null && _d !== void 0 ? _d : (_e = this.messageReactionCount) === null || _e === void 0 ? void 0 : _e.message_id, "editMessageReplyMarkup"), other, signal);
+            ? this.api.editMessageReplyMarkupInline(inlineId, { business_connection_id: this.businessConnectionId, ...other }, signal)
+            : this.api.editMessageReplyMarkup(orThrow(this.chatId, "editMessageReplyMarkup"), orThrow((_d = (_b = (_a = this.msg) === null || _a === void 0 ? void 0 : _a.message_id) !== null && _b !== void 0 ? _b : (_c = this.messageReaction) === null || _c === void 0 ? void 0 : _c.message_id) !== null && _d !== void 0 ? _d : (_e = this.messageReactionCount) === null || _e === void 0 ? void 0 : _e.message_id, "editMessageReplyMarkup"), { business_connection_id: this.businessConnectionId, ...other }, signal);
     }
     /**
      * Context-aware alias for `api.stopPoll`. Use this method to stop a poll which was sent by the bot. On success, the stopped Poll is returned.
@@ -8129,7 +8615,7 @@ class Context {
      */
     stopPoll(other, signal) {
         var _a, _b, _c, _d, _e;
-        return this.api.stopPoll(orThrow(this.chatId, "stopPoll"), orThrow((_d = (_b = (_a = this.msg) === null || _a === void 0 ? void 0 : _a.message_id) !== null && _b !== void 0 ? _b : (_c = this.messageReaction) === null || _c === void 0 ? void 0 : _c.message_id) !== null && _d !== void 0 ? _d : (_e = this.messageReactionCount) === null || _e === void 0 ? void 0 : _e.message_id, "stopPoll"), other, signal);
+        return this.api.stopPoll(orThrow(this.chatId, "stopPoll"), orThrow((_d = (_b = (_a = this.msg) === null || _a === void 0 ? void 0 : _a.message_id) !== null && _b !== void 0 ? _b : (_c = this.messageReaction) === null || _c === void 0 ? void 0 : _c.message_id) !== null && _d !== void 0 ? _d : (_e = this.messageReactionCount) === null || _e === void 0 ? void 0 : _e.message_id, "stopPoll"), { business_connection_id: this.businessConnectionId, ...other }, signal);
     }
     /**
      * Context-aware alias for `api.deleteMessage`. Use this method to delete a message, including service messages, with the following limitations:
@@ -8139,7 +8625,8 @@ class Context {
      * - Bots can delete incoming messages in private chats.
      * - Bots granted can_post_messages permissions can delete outgoing messages in channels.
      * - If the bot is an administrator of a group, it can delete any message there.
-     * - If the bot has can_delete_messages permission in a supergroup or a channel, it can delete any message there.
+     * - If the bot has can_delete_messages administrator right in a supergroup or a channel, it can delete any message there.
+     * - If the bot has can_manage_direct_messages administrator right in a channel, it can delete any message in the corresponding direct messages chat.
      * Returns True on success.
      *
      * @param signal Optional `AbortSignal` to cancel the request
@@ -8163,6 +8650,205 @@ class Context {
         return this.api.deleteMessages(orThrow(this.chatId, "deleteMessages"), message_ids, signal);
     }
     /**
+     * Context-aware alias for `api.deleteBusinessMessages`. Delete messages on behalf of a business account. Requires the can_delete_outgoing_messages business bot right to delete messages sent by the bot itself, or the can_delete_all_messages business bot right to delete any message. Returns True on success.
+     *
+     * @param message_ids A list of 1-100 identifiers of messages to delete. All messages must be from the same chat. See deleteMessage for limitations on which messages can be deleted
+     * @param signal Optional `AbortSignal` to cancel the request
+     *
+     * **Official reference:** https://core.telegram.org/bots/api#deletebusinessmessages
+     */
+    deleteBusinessMessages(message_ids, signal) {
+        return this.api.deleteBusinessMessages(orThrow(this.businessConnectionId, "deleteBusinessMessages"), message_ids, signal);
+    }
+    /**
+     * Context-aware alias for `api.setBusinessAccountName`. Changes the first and last name of a managed business account. Requires the can_change_name business bot right. Returns True on success.
+     *
+     * @param first_name The new value of the first name for the business account; 1-64 characters
+     * @param other Optional remaining parameters, confer the official reference below
+     * @param signal Optional `AbortSignal` to cancel the request
+     *
+     * **Official reference:** https://core.telegram.org/bots/api#setbusinessaccountname
+     */
+    setBusinessAccountName(first_name, other, signal) {
+        return this.api.setBusinessAccountName(orThrow(this.businessConnectionId, "setBusinessAccountName"), first_name, other, signal);
+    }
+    /**
+     * Context-aware alias for `api.setBusinessAccountUsername`. Changes the username of a managed business account. Requires the can_change_username business bot right. Returns True on success.
+     *
+     * @param username The new value of the username for the business account; 0-32 characters
+     * @param signal Optional `AbortSignal` to cancel the request
+     *
+     * **Official reference:** https://core.telegram.org/bots/api#setbusinessaccountusername
+     */
+    setBusinessAccountUsername(username, signal) {
+        return this.api.setBusinessAccountUsername(orThrow(this.businessConnectionId, "setBusinessAccountUsername"), username, signal);
+    }
+    /**
+     * Context-aware alias for `api.setBusinessAccountBio`. Changes the bio of a managed business account. Requires the can_change_bio business bot right. Returns True on success.
+     *
+     * @param bio The new value of the bio for the business account; 0-140 characters
+     * @param signal Optional `AbortSignal` to cancel the request
+     *
+     * **Official reference:** https://core.telegram.org/bots/api#setbusinessaccountbio
+     */
+    setBusinessAccountBio(bio, signal) {
+        return this.api.setBusinessAccountBio(orThrow(this.businessConnectionId, "setBusinessAccountBio"), bio, signal);
+    }
+    /**
+     * Context-aware alias for `api.setBusinessAccountProfilePhoto`. CsetBusinessAccountProfilePhotohanges the profile photo of a managed business account. Requires the can_edit_profile_photo business bot right. Returns True on success.
+     *
+     * @param photo The new profile photo to set
+     * @param other Optional remaining parameters, confer the official reference below
+     * @param signal Optional `AbortSignal` to cancel the request
+     *
+     * **Official reference:** https://core.telegram.org/bots/api#setbusinessaccountprofilephoto
+     */
+    setBusinessAccountProfilePhoto(photo, other, signal) {
+        return this.api.setBusinessAccountProfilePhoto(orThrow(this.businessConnectionId, "setBusinessAccountProfilePhoto"), photo, other, signal);
+    }
+    /**
+     * Context-aware alias for `api.removeBusinessAccountProfilePhoto`. Removes the current profile photo of a managed business account. Requires the can_edit_profile_photo business bot right. Returns True on success.
+     *
+     * @param other Optional remaining parameters, confer the official reference below
+     * @param signal Optional `AbortSignal` to cancel the request
+     *
+     * **Official reference:** https://core.telegram.org/bots/api#removebusinessaccountprofilephoto
+     */
+    removeBusinessAccountProfilePhoto(other, signal) {
+        return this.api.removeBusinessAccountProfilePhoto(orThrow(this.businessConnectionId, "removeBusinessAccountProfilePhoto"), other, signal);
+    }
+    /**
+     * Context-aware alias for `api.setBusinessAccountGiftSettings`. Changes the privacy settings pertaining to incoming gifts in a managed business account. Requires the can_change_gift_settings business bot right. Returns True on success.
+     *
+     * @param show_gift_button Pass True, if a button for sending a gift to the user or by the business account must always be shown in the input field
+     * @param accepted_gift_types Types of gifts accepted by the business account
+     * @param signal Optional `AbortSignal` to cancel the request
+     *
+     * **Official reference:** https://core.telegram.org/bots/api#setbusinessaccountgiftsettings
+     */
+    setBusinessAccountGiftSettings(show_gift_button, accepted_gift_types, signal) {
+        return this.api.setBusinessAccountGiftSettings(orThrow(this.businessConnectionId, "setBusinessAccountGiftSettings"), show_gift_button, accepted_gift_types, signal);
+    }
+    /**
+     * Context-aware alias for `api.getBusinessAccountStarBalance`. Returns the amount of Telegram Stars owned by a managed business account. Requires the can_view_gifts_and_stars business bot right. Returns StarAmount on success.
+     *
+     * @param signal Optional `AbortSignal` to cancel the request
+     *
+     * **Official reference:** https://core.telegram.org/bots/api#getbusinessaccountstarbalance
+     */
+    getBusinessAccountStarBalance(signal) {
+        return this.api.getBusinessAccountStarBalance(orThrow(this.businessConnectionId, "getBusinessAccountStarBalance"), signal);
+    }
+    /**
+     * Context-aware alias for `api.transferBusinessAccountStars`. Transfers Telegram Stars from the business account balance to the bot's balance. Requires the can_transfer_stars business bot right. Returns True on success.
+     *
+     * @param star_count Number of Telegram Stars to transfer; 1-10000
+     * @param signal Optional `AbortSignal` to cancel the request
+     *
+     * **Official reference:** https://core.telegram.org/bots/api#transferbusinessaccountstars
+     */
+    transferBusinessAccountStars(star_count, signal) {
+        return this.api.transferBusinessAccountStars(orThrow(this.businessConnectionId, "transferBusinessAccountStars"), star_count, signal);
+    }
+    /**
+     * Context-aware alias for `api.getBusinessAccountGifts`. Returns the gifts received and owned by a managed business account. Requires the can_view_gifts_and_stars business bot right. Returns OwnedGifts on success.
+     *
+     * @param other Optional remaining parameters, confer the official reference below
+     * @param signal Optional `AbortSignal` to cancel the request
+     *
+     * **Official reference:** https://core.telegram.org/bots/api#getbusinessaccountgifts
+     */
+    getBusinessAccountGifts(other, signal) {
+        return this.api.getBusinessAccountGifts(orThrow(this.businessConnectionId, "getBusinessAccountGifts"), other, signal);
+    }
+    /**
+     * Context-aware alias for `api.convertGiftToStars`. Converts a given regular gift to Telegram Stars. Requires the can_convert_gifts_to_stars business bot right. Returns True on success.
+     *
+     * @param owned_gift_id Unique identifier of the regular gift that should be converted to Telegram Stars
+     * @param signal Optional `AbortSignal` to cancel the request
+     *
+     * **Official reference:** https://core.telegram.org/bots/api#convertgifttostars
+     */
+    convertGiftToStars(owned_gift_id, signal) {
+        return this.api.convertGiftToStars(orThrow(this.businessConnectionId, "convertGiftToStars"), owned_gift_id, signal);
+    }
+    /**
+     * Context-aware alias for `api.upgradeGift`. Upgrades a given regular gift to a unique gift. Requires the can_transfer_and_upgrade_gifts business bot right. Additionally requires the can_transfer_stars business bot right if the upgrade is paid. Returns True on success.
+     *
+     * @param owned_gift_id Unique identifier of the regular gift that should be upgraded to a unique one
+     * @param other Optional remaining parameters, confer the official reference below
+     * @param signal Optional `AbortSignal` to cancel the request
+     *
+     * **Official reference:** https://core.telegram.org/bots/api#upgradegift
+     */
+    upgradeGift(owned_gift_id, other, signal) {
+        return this.api.upgradeGift(orThrow(this.businessConnectionId, "upgradeGift"), owned_gift_id, other, signal);
+    }
+    /**
+     * Context-aware alias for `api.transferGift`. Transfers an owned unique gift to another user. Requires the can_transfer_and_upgrade_gifts business bot right. Requires can_transfer_stars business bot right if the transfer is paid. Returns True on success.
+     *
+     * @param owned_gift_id Unique identifier of the regular gift that should be transferred
+     * @param new_owner_chat_id Unique identifier of the chat which will own the gift. The chat must be active in the last 24 hours.
+     * @param star_count The amount of Telegram Stars that will be paid for the transfer from the business account balance. If positive, then the can_transfer_stars business bot right is required.
+     * @param signal Optional `AbortSignal` to cancel the request
+     *
+     * **Official reference:** https://core.telegram.org/bots/api#transfergift
+     */
+    transferGift(owned_gift_id, new_owner_chat_id, star_count, signal) {
+        return this.api.transferGift(orThrow(this.businessConnectionId, "transferGift"), owned_gift_id, new_owner_chat_id, star_count, signal);
+    }
+    /**
+     * Context-aware alias for `api.postStory`. Posts a story on behalf of a managed business account. Requires the can_manage_stories business bot right. Returns Story on success.
+     *
+     * @param content Content of the story
+     * @param active_period Period after which the story is moved to the archive, in seconds; must be one of 6 * 3600, 12 * 3600, 86400, or 2 * 86400
+     * @param other Optional remaining parameters, confer the official reference below
+     * @param signal Optional `AbortSignal` to cancel the request
+     *
+     * **Official reference:** https://core.telegram.org/bots/api#poststory
+     */
+    postStory(content, active_period, other, signal) {
+        return this.api.postStory(orThrow(this.businessConnectionId, "postStory"), content, active_period, other, signal);
+    }
+    /**
+     * Context-aware alias for `api.repostStory`. Reposts a story on behalf of a business account from another business account. Both business accounts must be managed by the same bot, and the story on the source account must have been posted (or reposted) by the bot. Requires the can_manage_stories business bot right for both business accounts. Returns Story on success.
+     *
+     * @param active_period Period after which the story is moved to the archive, in seconds; must be one of 6 * 3600, 12 * 3600, 86400, or 2 * 86400
+     * @param other Optional remaining parameters, confer the official reference below
+     * @param signal Optional `AbortSignal` to cancel the request
+     *
+     * **Official reference:** https://core.telegram.org/bots/api#repoststory
+     */
+    repostStory(active_period, other, signal) {
+        var _a;
+        const story = orThrow((_a = this.msg) === null || _a === void 0 ? void 0 : _a.story, "repostStory");
+        return this.api.repostStory(orThrow(this.businessConnectionId, "repostStory"), story.chat.id, story.id, active_period, other, signal);
+    }
+    /**
+     * Context-aware alias for `api.editStory`. Edits a story previously posted by the bot on behalf of a managed business account. Requires the can_manage_stories business bot right. Returns Story on success.
+     *
+     * @param story_id Unique identifier of the story to edit
+     * @param content Content of the story
+     * @param other Optional remaining parameters, confer the official reference below
+     * @param signal Optional `AbortSignal` to cancel the request
+     *
+     * **Official reference:** https://core.telegram.org/bots/api#editstory
+     */
+    editStory(story_id, content, other, signal) {
+        return this.api.editStory(orThrow(this.businessConnectionId, "editStory"), story_id, content, other, signal);
+    }
+    /**
+     * Context-aware alias for `api.deleteStory`. Deletes a story previously posted by the bot on behalf of a managed business account. Requires the can_manage_stories business bot right. Returns True on success.
+     *
+     * @param story_id Unique identifier of the story to delete
+     * @param signal Optional `AbortSignal` to cancel the request
+     *
+     * **Official reference:** https://core.telegram.org/bots/api#deletestory
+     */
+    deleteStory(story_id, signal) {
+        return this.api.deleteStory(orThrow(this.businessConnectionId, "deleteStory"), story_id, signal);
+    }
+    /**
      * Context-aware alias for `api.sendSticker`. Use this method to send static .WEBP, animated .TGS, or video .WEBM stickers. On success, the sent Message is returned.
      *
      * @param sticker Sticker to send. Pass a file_id as String to send a file that exists on the Telegram servers (recommended), pass an HTTP URL as a String for Telegram to get a .WEBP sticker from the Internet, or upload a new .WEBP, .TGS, or .WEBM sticker using multipart/form-data. Video and animated stickers can't be sent via an HTTP URL.
@@ -8172,7 +8858,16 @@ class Context {
      * **Official reference:** https://core.telegram.org/bots/api#sendsticker
      */
     replyWithSticker(sticker, other, signal) {
-        return this.api.sendSticker(orThrow(this.chatId, "sendSticker"), sticker, { business_connection_id: this.businessConnectionId, ...other }, signal);
+        var _a;
+        const msg = this.msg;
+        return this.api.sendSticker(orThrow(this.chatId, "sendSticker"), sticker, {
+            business_connection_id: this.businessConnectionId,
+            ...((msg === null || msg === void 0 ? void 0 : msg.is_topic_message)
+                ? { message_thread_id: msg.message_thread_id }
+                : {}),
+            direct_messages_topic_id: (_a = msg === null || msg === void 0 ? void 0 : msg.direct_messages_topic) === null || _a === void 0 ? void 0 : _a.topic_id,
+            ...other,
+        }, signal);
     }
     /**
      * Use this method to get information about custom emoji stickers by their identifiers. Returns an Array of Sticker objects.
@@ -8187,6 +8882,43 @@ class Context {
         return this.api.getCustomEmojiStickers(((_b = (_a = this.msg) === null || _a === void 0 ? void 0 : _a.entities) !== null && _b !== void 0 ? _b : [])
             .filter((e) => e.type === "custom_emoji")
             .map((e) => e.custom_emoji_id), signal);
+    }
+    /**
+     * Context-aware alias for `api.sendGift`. Sends a gift to the given user. The gift can't be converted to Telegram Stars by the receiver. Returns True on success.
+     *
+     * @param gift_id Identifier of the gift
+     * @param other Optional remaining parameters, confer the official reference below
+     * @param signal Optional `AbortSignal` to cancel the request
+     *
+     * **Official reference:** https://core.telegram.org/bots/api#sendgift
+     */
+    replyWithGift(gift_id, other, signal) {
+        return this.api.sendGift(orThrow(this.from, "sendGift").id, gift_id, other, signal);
+    }
+    /**
+     * Context-aware alias for `api.giftPremiumSubscription`. Gifts a Telegram Premium subscription to the given user. Returns True on success.
+     *
+     * @param month_count Number of months the Telegram Premium subscription will be active for the user; must be one of 3, 6, or 12
+     * @param star_count Number of Telegram Stars to pay for the Telegram Premium subscription; must be 1000 for 3 months, 1500 for 6 months, and 2500 for 12 months
+     * @param other Optional remaining parameters, confer the official reference below
+     * @param signal Optional `AbortSignal` to cancel the request
+     *
+     * **Official reference:** https://core.telegram.org/bots/api#giftpremiumsubscription
+     */
+    giftPremiumSubscription(month_count, star_count, other, signal) {
+        return this.api.giftPremiumSubscription(orThrow(this.from, "giftPremiumSubscription").id, month_count, star_count, other, signal);
+    }
+    /**
+     * Context-aware alias for `api.sendGift`. Sends a gift to the given channel chat. The gift can't be converted to Telegram Stars by the receiver. Returns True on success.
+     *
+     * @param gift_id Identifier of the gift
+     * @param other Optional remaining parameters, confer the official reference below
+     * @param signal Optional `AbortSignal` to cancel the request
+     *
+     * **Official reference:** https://core.telegram.org/bots/api#sendgift
+     */
+    replyWithGiftToChannel(gift_id, other, signal) {
+        return this.api.sendGiftToChannel(orThrow(this.chat, "sendGift").id, gift_id, other, signal);
     }
     /**
      * Context-aware alias for `api.answerInlineQuery`. Use this method to send answers to an inline query. On success, True is returned.
@@ -8204,6 +8936,18 @@ class Context {
         return this.api.answerInlineQuery(orThrow(this.inlineQuery, "answerInlineQuery").id, results, other, signal);
     }
     /**
+     * Context-aware alias for `api.savePreparedInlineMessage`. Stores a message that can be sent by a user of a Mini App. Returns a PreparedInlineMessage object.
+     *
+     * @param result An object describing the message to be sent
+     * @param other Optional remaining parameters, confer the official reference below
+     * @param signal Optional `AbortSignal` to cancel the request
+     *
+     * **Official reference:** https://core.telegram.org/bots/api#savepreparedinlinemessage
+     */
+    savePreparedInlineMessage(result, other, signal) {
+        return this.api.savePreparedInlineMessage(orThrow(this.from, "savePreparedInlineMessage").id, result, other, signal);
+    }
+    /**
      * Context-aware alias for `api.sendInvoice`. Use this method to send invoices. On success, the sent Message is returned.
      *
      * @param title Product name, 1-32 characters
@@ -8217,7 +8961,15 @@ class Context {
      * **Official reference:** https://core.telegram.org/bots/api#sendinvoice
      */
     replyWithInvoice(title, description, payload, currency, prices, other, signal) {
-        return this.api.sendInvoice(orThrow(this.chatId, "sendInvoice"), title, description, payload, currency, prices, other, signal);
+        var _a;
+        const msg = this.msg;
+        return this.api.sendInvoice(orThrow(this.chatId, "sendInvoice"), title, description, payload, currency, prices, {
+            ...((msg === null || msg === void 0 ? void 0 : msg.is_topic_message)
+                ? { message_thread_id: msg.message_thread_id }
+                : {}),
+            direct_messages_topic_id: (_a = msg === null || msg === void 0 ? void 0 : msg.direct_messages_topic) === null || _a === void 0 ? void 0 : _a.topic_id,
+            ...other,
+        }, signal);
     }
     /**
      * Context-aware alias for `api.answerShippingQuery`. If you sent an invoice requesting a shipping address and the parameter is_flexible was specified, the Bot API will send an Update with a shipping_query field to the bot. Use this method to reply to shipping queries. On success, True is returned.
@@ -8257,6 +9009,70 @@ class Context {
             .telegram_payment_charge_id, signal);
     }
     /**
+     * Context-aware alias for `api.editUserStarSubscription`. Allows the bot to cancel or re-enable extension of a subscription paid in Telegram Stars. Returns True on success.
+     *
+     * @param telegram_payment_charge_id Telegram payment identifier for the subscription
+     * @param is_canceled Pass True to cancel extension of the user subscription; the subscription must be active up to the end of the current subscription period. Pass False to allow the user to re-enable a subscription that was previously canceled by the bot.
+     * @param signal Optional `AbortSignal` to cancel the request
+     *
+     * **Official reference:** https://core.telegram.org/bots/api#edituserstarsubscription
+     */
+    editUserStarSubscription(telegram_payment_charge_id, is_canceled, signal) {
+        return this.api.editUserStarSubscription(orThrow(this.from, "editUserStarSubscription").id, telegram_payment_charge_id, is_canceled, signal);
+    }
+    /**
+     * Context-aware alias for `api.verifyUser`. Verifies a user on behalf of the organization which is represented by the bot. Returns True on success.
+     *
+     * @param other Optional remaining parameters, confer the official reference below
+     * @param signal Optional `AbortSignal` to cancel the request
+     *
+     * **Official reference:** https://core.telegram.org/bots/api#verifyuser
+     */
+    verifyUser(other, signal) {
+        return this.api.verifyUser(orThrow(this.from, "verifyUser").id, other, signal);
+    }
+    /**
+     * Context-aware alias for `api.verifyChat`. Verifies a chat on behalf of the organization which is represented by the bot. Returns True on success.
+     *
+     * @param other Optional remaining parameters, confer the official reference below
+     * @param signal Optional `AbortSignal` to cancel the request
+     *
+     * **Official reference:** https://core.telegram.org/bots/api#verifychat
+     */
+    verifyChat(other, signal) {
+        return this.api.verifyChat(orThrow(this.chatId, "verifyChat"), other, signal);
+    }
+    /**
+     * Context-aware alias for `api.removeUserVerification`. Removes verification from a user who is currently verified on behalf of the organization represented by the bot. Returns True on success.
+     *
+     * @param signal Optional `AbortSignal` to cancel the request
+     *
+     * **Official reference:** https://core.telegram.org/bots/api#removeuserverification
+     */
+    removeUserVerification(signal) {
+        return this.api.removeUserVerification(orThrow(this.from, "removeUserVerification").id, signal);
+    }
+    /**
+     * Context-aware alias for `api.removeChatVerification`. Removes verification from a chat that is currently verified on behalf of the organization represented by the bot. Returns True on success.
+     *
+     * @param signal Optional `AbortSignal` to cancel the request
+     *
+     * **Official reference:** https://core.telegram.org/bots/api#removechatverification
+     */
+    removeChatVerification(signal) {
+        return this.api.removeChatVerification(orThrow(this.chatId, "removeChatVerification"), signal);
+    }
+    /**
+     * Context-aware alias for `api.readBusinessMessage`. Marks incoming message as read on behalf of a business account. Requires the can_read_messages business bot right. Returns True on success.
+     *
+     * @param signal Optional `AbortSignal` to cancel the request
+     *
+     * **Official reference:** https://core.telegram.org/bots/api#readbusinessmessage
+     */
+    readBusinessMessage(signal) {
+        return this.api.readBusinessMessage(orThrow(this.businessConnectionId, "readBusinessMessage"), orThrow(this.chatId, "readBusinessMessage"), orThrow(this.msgId, "readBusinessMessage"), signal);
+    }
+    /**
      * Context-aware alias for `api.setPassportDataErrors`. Informs a user that some of the Telegram Passport elements they provided contains errors. The user will not be able to re-submit their Passport to you until the errors are fixed (the contents of the field for which you returned the error must change). Returns True on success.
      *
      * Use this if the data submitted by the user doesn't satisfy the standards your service requires for any reason. For example, if a birthday date seems invalid, a submitted document is blurry, a scan shows evidence of tampering, etc. Supply some details in the error message to make sure the user knows how to correct the issues.
@@ -8279,7 +9095,14 @@ class Context {
      * **Official reference:** https://core.telegram.org/bots/api#sendgame
      */
     replyWithGame(game_short_name, other, signal) {
-        return this.api.sendGame(orThrow(this.chatId, "sendGame"), game_short_name, { business_connection_id: this.businessConnectionId, ...other }, signal);
+        const msg = this.msg;
+        return this.api.sendGame(orThrow(this.chatId, "sendGame"), game_short_name, {
+            business_connection_id: this.businessConnectionId,
+            ...((msg === null || msg === void 0 ? void 0 : msg.is_topic_message)
+                ? { message_thread_id: msg.message_thread_id }
+                : {}),
+            ...other,
+        }, signal);
     }
 }
 exports.Context = Context;
@@ -8349,19 +9172,19 @@ const ALL_UPDATE_TYPES = [
     "message_reaction_count",
 ];
 const ALL_CHAT_PERMISSIONS = {
-    is_anonymous: true,
-    can_manage_chat: true,
-    can_delete_messages: true,
-    can_manage_video_chats: true,
-    can_restrict_members: true,
-    can_promote_members: true,
+    can_send_messages: true,
+    can_send_audios: true,
+    can_send_documents: true,
+    can_send_photos: true,
+    can_send_videos: true,
+    can_send_video_notes: true,
+    can_send_voice_notes: true,
+    can_send_polls: true,
+    can_send_other_messages: true,
+    can_add_web_page_previews: true,
     can_change_info: true,
     can_invite_users: true,
-    can_post_stories: true,
-    can_edit_stories: true,
-    can_delete_stories: true,
-    can_post_messages: true,
-    can_edit_messages: true,
+    can_edit_tag: true,
     can_pin_messages: true,
     can_manage_topics: true,
 };
@@ -8399,27 +9222,29 @@ const unauthorized = () => new Response('"unauthorized"', {
     statusText: WRONG_TOKEN_ERROR,
 });
 /** AWS lambda serverless functions */
-const awsLambda = (event, _context, callback) => {
-    var _a;
-    return ({
-        update: JSON.parse((_a = event.body) !== null && _a !== void 0 ? _a : "{}"),
-        header: event.headers[SECRET_HEADER],
-        end: () => callback(null, { statusCode: 200 }),
-        respond: (json) => callback(null, {
-            statusCode: 200,
-            headers: { "Content-Type": "application/json" },
-            body: json,
-        }),
-        unauthorized: () => callback(null, { statusCode: 401 }),
-    });
-};
+const awsLambda = (event, _context, callback) => ({
+    get update() {
+        var _a;
+        return JSON.parse((_a = event.body) !== null && _a !== void 0 ? _a : "{}");
+    },
+    header: event.headers[SECRET_HEADER],
+    end: () => callback(null, { statusCode: 200 }),
+    respond: (json) => callback(null, {
+        statusCode: 200,
+        headers: { "Content-Type": "application/json" },
+        body: json,
+    }),
+    unauthorized: () => callback(null, { statusCode: 401 }),
+});
 /** AWS lambda async/await serverless functions */
 const awsLambdaAsync = (event, _context) => {
-    var _a;
     // deno-lint-ignore no-explicit-any
     let resolveResponse;
     return {
-        update: JSON.parse((_a = event.body) !== null && _a !== void 0 ? _a : "{}"),
+        get update() {
+            var _a;
+            return JSON.parse((_a = event.body) !== null && _a !== void 0 ? _a : "{}");
+        },
         header: event.headers[SECRET_HEADER],
         end: () => resolveResponse({ statusCode: 200 }),
         respond: (json) => resolveResponse({
@@ -8428,16 +9253,16 @@ const awsLambdaAsync = (event, _context) => {
             body: json,
         }),
         unauthorized: () => resolveResponse({ statusCode: 401 }),
-        handlerReturn: new Promise((resolve) => {
-            resolveResponse = resolve;
-        }),
+        handlerReturn: new Promise((res) => resolveResponse = res),
     };
 };
-/** Azure Functions */
-const azure = (request, context) => {
+/** Azure Functions v3 and v4 */
+const azure = (context, request) => {
     var _a, _b;
     return ({
-        update: Promise.resolve(request.body),
+        get update() {
+            return request.body;
+        },
         header: (_b = (_a = context.res) === null || _a === void 0 ? void 0 : _a.headers) === null || _b === void 0 ? void 0 : _b[SECRET_HEADER],
         end: () => (context.res = {
             status: 200,
@@ -8454,11 +9279,26 @@ const azure = (request, context) => {
         },
     });
 };
+const azureV4 = (request) => {
+    let resolveResponse;
+    return {
+        get update() {
+            return request.json();
+        },
+        header: request.headers.get(SECRET_HEADER) || undefined,
+        end: () => resolveResponse({ status: 204 }),
+        respond: (json) => resolveResponse({ jsonBody: json }),
+        unauthorized: () => resolveResponse({ status: 401, body: WRONG_TOKEN_ERROR }),
+        handlerReturn: new Promise((resolve) => resolveResponse = resolve),
+    };
+};
 /** Bun.serve */
 const bun = (request) => {
     let resolveResponse;
     return {
-        update: request.json(),
+        get update() {
+            return request.json();
+        },
         header: request.headers.get(SECRET_HEADER) || undefined,
         end: () => {
             resolveResponse(ok());
@@ -8469,6 +9309,7 @@ const bun = (request) => {
         unauthorized: () => {
             resolveResponse(unauthorized());
         },
+        handlerReturn: new Promise((res) => resolveResponse = res),
     };
 };
 /** Native CloudFlare workers (service worker) */
@@ -8478,7 +9319,9 @@ const cloudflare = (event) => {
         resolveResponse = resolve;
     }));
     return {
-        update: event.request.json(),
+        get update() {
+            return event.request.json();
+        },
         header: event.request.headers.get(SECRET_HEADER) || undefined,
         end: () => {
             resolveResponse(ok());
@@ -8495,7 +9338,9 @@ const cloudflare = (event) => {
 const cloudflareModule = (request) => {
     let resolveResponse;
     return {
-        update: request.json(),
+        get update() {
+            return request.json();
+        },
         header: request.headers.get(SECRET_HEADER) || undefined,
         end: () => {
             resolveResponse(ok());
@@ -8506,14 +9351,14 @@ const cloudflareModule = (request) => {
         unauthorized: () => {
             resolveResponse(unauthorized());
         },
-        handlerReturn: new Promise((resolve) => {
-            resolveResponse = resolve;
-        }),
+        handlerReturn: new Promise((res) => resolveResponse = res),
     };
 };
 /** express web framework */
 const express = (req, res) => ({
-    update: Promise.resolve(req.body),
+    get update() {
+        return req.body;
+    },
     header: req.header(SECRET_HEADER),
     end: () => res.end(),
     respond: (json) => {
@@ -8526,9 +9371,11 @@ const express = (req, res) => ({
 });
 /** fastify web framework */
 const fastify = (request, reply) => ({
-    update: Promise.resolve(request.body),
+    get update() {
+        return request.body;
+    },
     header: request.headers[SECRET_HEADER_LOWERCASE],
-    end: () => reply.status(200).send(),
+    end: () => reply.send(""),
     respond: (json) => reply.headers({ "Content-Type": "application/json" }).send(json),
     unauthorized: () => reply.code(401).send(WRONG_TOKEN_ERROR),
 });
@@ -8536,37 +9383,45 @@ const fastify = (request, reply) => ({
 const hono = (c) => {
     let resolveResponse;
     return {
-        update: c.req.json(),
+        get update() {
+            return c.req.json();
+        },
         header: c.req.header(SECRET_HEADER),
         end: () => {
-            resolveResponse(c.body(null));
+            resolveResponse(c.body(""));
         },
         respond: (json) => {
             resolveResponse(c.json(json));
         },
         unauthorized: () => {
             c.status(401);
-            resolveResponse(c.body(null));
+            resolveResponse(c.body(""));
         },
-        handlerReturn: new Promise((resolve) => {
-            resolveResponse = resolve;
-        }),
+        handlerReturn: new Promise((res) => resolveResponse = res),
     };
 };
 /** Node.js native 'http' and 'https' modules */
 const http = (req, res) => {
     const secretHeaderFromRequest = req.headers[SECRET_HEADER_LOWERCASE];
     return {
-        update: new Promise((resolve, reject) => {
-            const chunks = [];
-            req.on("data", (chunk) => chunks.push(chunk))
-                .once("end", () => {
-                // @ts-ignore `Buffer` is Node-only
-                const raw = Buffer.concat(chunks).toString("utf-8");
-                resolve(JSON.parse(raw));
-            })
-                .once("error", reject);
-        }),
+        get update() {
+            return new Promise((resolve, reject) => {
+                const chunks = [];
+                req.on("data", (chunk) => chunks.push(chunk))
+                    .once("end", () => {
+                    // @ts-ignore `Buffer` is Node-only
+                    // deno-lint-ignore no-node-globals
+                    const raw = Buffer.concat(chunks).toString("utf-8");
+                    try {
+                        resolve(JSON.parse(raw));
+                    }
+                    catch (err) {
+                        reject(err);
+                    }
+                })
+                    .once("error", reject);
+            });
+        },
         header: Array.isArray(secretHeaderFromRequest)
             ? secretHeaderFromRequest[0]
             : secretHeaderFromRequest,
@@ -8579,7 +9434,9 @@ const http = (req, res) => {
 };
 /** koa web framework */
 const koa = (ctx) => ({
-    update: Promise.resolve(ctx.request.body),
+    get update() {
+        return ctx.request.body;
+    },
     header: ctx.get(SECRET_HEADER) || undefined,
     end: () => {
         ctx.body = "";
@@ -8594,7 +9451,9 @@ const koa = (ctx) => ({
 });
 /** Next.js Serverless Functions */
 const nextJs = (request, response) => ({
-    update: Promise.resolve(request.body),
+    get update() {
+        return request.body;
+    },
     header: request.headers[SECRET_HEADER_LOWERCASE],
     end: () => response.end(),
     respond: (json) => response.status(200).json(json),
@@ -8602,7 +9461,9 @@ const nextJs = (request, response) => ({
 });
 /** nhttp web framework */
 const nhttp = (rev) => ({
-    update: Promise.resolve(rev.body),
+    get update() {
+        return rev.body;
+    },
     header: rev.headers.get(SECRET_HEADER) || undefined,
     end: () => rev.response.sendStatus(200),
     respond: (json) => rev.response.status(200).send(json),
@@ -8610,7 +9471,9 @@ const nhttp = (rev) => ({
 });
 /** oak web framework */
 const oak = (ctx) => ({
-    update: ctx.request.body.json(),
+    get update() {
+        return ctx.request.body.json();
+    },
     header: ctx.request.headers.get(SECRET_HEADER) || undefined,
     end: () => {
         ctx.response.status = 200;
@@ -8625,7 +9488,9 @@ const oak = (ctx) => ({
 });
 /** Deno.serve */
 const serveHttp = (requestEvent) => ({
-    update: requestEvent.request.json(),
+    get update() {
+        return requestEvent.request.json();
+    },
     header: requestEvent.request.headers.get(SECRET_HEADER) || undefined,
     end: () => requestEvent.respondWith(ok()),
     respond: (json) => requestEvent.respondWith(okJson(json)),
@@ -8635,7 +9500,9 @@ const serveHttp = (requestEvent) => ({
 const stdHttp = (req) => {
     let resolveResponse;
     return {
-        update: req.json(),
+        get update() {
+            return req.json();
+        },
         header: req.headers.get(SECRET_HEADER) || undefined,
         end: () => {
             if (resolveResponse)
@@ -8649,16 +9516,16 @@ const stdHttp = (req) => {
             if (resolveResponse)
                 resolveResponse(unauthorized());
         },
-        handlerReturn: new Promise((resolve) => {
-            resolveResponse = resolve;
-        }),
+        handlerReturn: new Promise((res) => resolveResponse = res),
     };
 };
 /** Sveltekit Serverless Functions */
 const sveltekit = ({ request }) => {
     let resolveResponse;
     return {
-        update: Promise.resolve(request.json()),
+        get update() {
+            return request.json();
+        },
         header: request.headers.get(SECRET_HEADER) || undefined,
         end: () => {
             if (resolveResponse)
@@ -8672,30 +9539,57 @@ const sveltekit = ({ request }) => {
             if (resolveResponse)
                 resolveResponse(unauthorized());
         },
-        handlerReturn: new Promise((resolve) => {
-            resolveResponse = resolve;
-        }),
+        handlerReturn: new Promise((res) => resolveResponse = res),
     };
 };
 /** worktop Cloudflare workers framework */
 const worktop = (req, res) => {
     var _a;
     return ({
-        update: Promise.resolve(req.json()),
+        get update() {
+            return req.json();
+        },
         header: (_a = req.headers.get(SECRET_HEADER)) !== null && _a !== void 0 ? _a : undefined,
         end: () => res.end(null),
         respond: (json) => res.send(200, json),
         unauthorized: () => res.send(401, WRONG_TOKEN_ERROR),
     });
 };
+const elysia = (ctx) => {
+    // @note upgrade target to use modern code?
+    // const { promise, resolve } = Promise.withResolvers<string>();
+    let resolveResponse;
+    return {
+        // @note technically the type shouldn't be limited to Promise, because it's fine to await plain values as well
+        get update() {
+            return ctx.body;
+        },
+        header: ctx.headers[SECRET_HEADER_LOWERCASE],
+        end() {
+            resolveResponse("");
+        },
+        respond(json) {
+            // @note since json is passed as string here, we gotta define proper content-type
+            ctx.set.headers["content-type"] = "application/json";
+            resolveResponse(json);
+        },
+        unauthorized() {
+            ctx.set.status = 401;
+            resolveResponse("");
+        },
+        handlerReturn: new Promise((res) => resolveResponse = res),
+    };
+};
 // Please open a pull request if you want to add another adapter
 exports.adapters = {
     "aws-lambda": awsLambda,
     "aws-lambda-async": awsLambdaAsync,
     azure,
+    "azure-v4": azureV4,
     bun,
     cloudflare,
     "cloudflare-mod": cloudflareModule,
+    elysia,
     express,
     fastify,
     hono,
@@ -9021,17 +9915,15 @@ exports.InlineQueryResultBuilder = {
      * @param photo_url A valid URL of the photo. Photo must be in JPEG format. Photo size must not exceed 5MB
      * @param options Remaining options
      */
-    photo(id, photo_url, options = {
-        thumbnail_url: typeof photo_url === "string"
+    photo(id, photo_url, options = {}) {
+        const photoUrl = typeof photo_url === "string"
             ? photo_url
-            : photo_url.href,
-    }) {
+            : photo_url.href;
         return inputMessage({
             type: "photo",
             id,
-            photo_url: typeof photo_url === "string"
-                ? photo_url
-                : photo_url.href,
+            photo_url: photoUrl,
+            thumbnail_url: photoUrl,
             ...options,
         });
     },
@@ -9316,7 +10208,7 @@ exports.InlineKeyboard = exports.Keyboard = void 0;
  * ```
  *
  * Be sure to check out the
- * [documentation](https://grammy.dev/plugins/keyboard.html#custom-keyboards) on
+ * [documentation](https://grammy.dev/plugins/keyboard#custom-keyboards) on
  * custom keyboards in grammY.
  */
 class Keyboard {
@@ -9361,19 +10253,23 @@ class Keyboard {
      * Adds a new text button. This button will simply send the given text as a
      * text message back to your bot if a user clicks on it.
      *
-     * @param text The text to display
+     * @param text The text to display, and optional styling information
+     * @param options Optional styling information
      */
-    text(text) {
-        return this.add(Keyboard.text(text));
+    text(text, options) {
+        return this.add(Keyboard.text(text, options));
     }
     /**
      * Creates a new text button. This button will simply send the given text as
      * a text message back to your bot if a user clicks on it.
      *
-     * @param text The text to display
+     * @param text The text to display, and optional styling information
+     * @param options Optional styling information
      */
-    static text(text) {
-        return { text };
+    static text(text, options) {
+        return typeof options === "string"
+            ? { text, style: options }
+            : { text, ...options };
     }
     /**
      * Adds a new request users button. When the user presses the button, a list
@@ -9381,7 +10277,7 @@ class Keyboard {
      * send their identifiers to the bot in a “users_shared” service message.
      * Available in private chats only.
      *
-     * @param text The text to display
+     * @param text The text to display, and optional styling information
      * @param requestId A signed 32-bit identifier of the request
      * @param options Options object for further requirements
      */
@@ -9394,12 +10290,14 @@ class Keyboard {
      * will send their identifiers to the bot in a “users_shared” service
      * message. Available in private chats only.
      *
-     * @param text The text to display
+     * @param text The text to display, and optional styling information
      * @param requestId A signed 32-bit identifier of the request
      * @param options Options object for further requirements
      */
     static requestUsers(text, requestId, options = {}) {
-        return { text, request_users: { request_id: requestId, ...options } };
+        return typeof text === "string"
+            ? { text, request_users: { request_id: requestId, ...options } }
+            : { ...text, request_users: { request_id: requestId, ...options } };
     }
     /**
      * Adds a new request chat button. When the user presses the button, a list
@@ -9407,7 +10305,7 @@ class Keyboard {
      * identifier to the bot in a “chat_shared” service message. Available in
      * private chats only.
      *
-     * @param text The text to display
+     * @param text The text to display, and optional styling information
      * @param requestId A signed 32-bit identifier of the request
      * @param options Options object for further requirements
      */
@@ -9422,20 +10320,23 @@ class Keyboard {
      * identifier to the bot in a “chat_shared” service message. Available in
      * private chats only.
      *
-     * @param text The text to display
+     * @param text The text to display, and optional styling information
      * @param requestId A signed 32-bit identifier of the request
      * @param options Options object for further requirements
      */
     static requestChat(text, requestId, options = {
         chat_is_channel: false,
     }) {
-        return { text, request_chat: { request_id: requestId, ...options } };
+        const request_chat = { request_id: requestId, ...options };
+        return typeof text === "string"
+            ? { text, request_chat }
+            : { ...text, request_chat };
     }
     /**
      * Adds a new contact request button. The user's phone number will be sent
      * as a contact when the button is pressed. Available in private chats only.
      *
-     * @param text The text to display
+     * @param text The text to display, and optional styling information
      */
     requestContact(text) {
         return this.add(Keyboard.requestContact(text));
@@ -9445,16 +10346,19 @@ class Keyboard {
      * sent as a contact when the button is pressed. Available in private chats
      * only.
      *
-     * @param text The text to display
+     * @param text The text to display, and optional styling information
      */
     static requestContact(text) {
-        return { text, request_contact: true };
+        const request_contact = true;
+        return typeof text === "string"
+            ? { text, request_contact }
+            : { ...text, request_contact };
     }
     /**
      * Adds a new location request button. The user's current location will be
      * sent when the button is pressed. Available in private chats only.
      *
-     * @param text The text to display
+     * @param text The text to display, and optional styling information
      */
     requestLocation(text) {
         return this.add(Keyboard.requestLocation(text));
@@ -9463,17 +10367,20 @@ class Keyboard {
      * Creates a new location request button. The user's current location will
      * be sent when the button is pressed. Available in private chats only.
      *
-     * @param text The text to display
+     * @param text The text to display, and optional styling information
      */
     static requestLocation(text) {
-        return { text, request_location: true };
+        const request_location = true;
+        return typeof text === "string"
+            ? { text, request_location }
+            : { ...text, request_location };
     }
     /**
      * Adds a new poll request button. The user will be asked to create a poll
      * and send it to the bot when the button is pressed. Available in private
      * chats only.
      *
-     * @param text The text to display
+     * @param text The text to display, and optional styling information
      * @param type The type of permitted polls to create, omit if the user may
      * send a poll of any type
      */
@@ -9485,19 +10392,22 @@ class Keyboard {
      * poll and send it to the bot when the button is pressed. Available in
      * private chats only.
      *
-     * @param text The text to display
+     * @param text The text to display, and optional styling information
      * @param type The type of permitted polls to create, omit if the user may
      * send a poll of any type
      */
     static requestPoll(text, type) {
-        return { text, request_poll: { type } };
+        const request_poll = { type };
+        return typeof text === "string"
+            ? { text, request_poll }
+            : { ...text, request_poll };
     }
     /**
      * Adds a new web app button. The Web App that will be launched when the
      * user presses the button. The Web App will be able to send a
      * “web_app_data” service message. Available in private chats only.
      *
-     * @param text The text to display
+     * @param text The text to display, and optional styling information
      * @param url An HTTPS URL of a Web App to be opened with additional data
      */
     webApp(text, url) {
@@ -9508,15 +10418,115 @@ class Keyboard {
      * user presses the button. The Web App will be able to send a
      * “web_app_data” service message. Available in private chats only.
      *
-     * @param text The text to display
+     * @param text The text to display, and optional styling information
      * @param url An HTTPS URL of a Web App to be opened with additional data
      */
     static webApp(text, url) {
-        return { text, web_app: { url } };
+        const web_app = { url };
+        return typeof text === "string"
+            ? { text, web_app }
+            : { ...text, web_app };
+    }
+    /**
+     * Adds a style to the last added button of the keyboard.
+     *
+     * ```ts
+     * const keyboard = new Keyboard()
+     *   .text('blue button')
+     *   .style('primary')
+     * ```
+     *
+     * @param style Style of the button
+     */
+    style(style) {
+        const rows = this.keyboard.length;
+        if (rows === 0) {
+            throw new Error("Need to add a button before applying a style!");
+        }
+        const lastRow = this.keyboard[rows - 1];
+        const cols = lastRow.length;
+        if (cols === 0) {
+            throw new Error("Need to add a button before applying a style!");
+        }
+        let lastButton = lastRow[cols - 1];
+        if (typeof lastButton === "string") {
+            lastButton = { text: lastButton };
+            lastRow[cols - 1] = lastButton;
+        }
+        lastButton.style = style;
+        return this;
+    }
+    /**
+     * Adds a danger style to the last added button of the keyboard. Alias for
+     * `.style('danger')`.
+     *
+     * ```ts
+     * const keyboard = new Keyboard()
+     *   .text('red button')
+     *   .danger()
+     * ```
+     */
+    danger() {
+        return this.style("danger");
+    }
+    /**
+     * Adds a success style to the last added button of the keyboard. Alias for
+     * `.style('success')`.
+     *
+     * ```ts
+     * const keyboard = new Keyboard()
+     *   .text('green button')
+     *   .success()
+     * ```
+     */
+    success() {
+        return this.style("success");
+    }
+    /**
+     * Adds a primary style to the last added button of the keyboard. Alias for
+     * `.style('primary')`.
+     *
+     * ```ts
+     * const keyboard = new Keyboard()
+     *   .text('blue button')
+     *   .primary()
+     * ```
+     */
+    primary() {
+        return this.style("primary");
+    }
+    /**
+     * Adds a custom emoji icon to the last added button of the keyboard.
+     *
+     * ```ts
+     * const keyboard = new Keyboard()
+     *   .text('button with icon')
+     *   .icon(myCustomEmojiIconIdentifier)
+     * ```
+     *
+     * @param icon Unique identifier of the custom emoji shown before the text of the button
+     */
+    icon(icon) {
+        const rows = this.keyboard.length;
+        if (rows === 0) {
+            throw new Error("Need to add a button before adding an icon!");
+        }
+        const lastRow = this.keyboard[rows - 1];
+        const cols = lastRow.length;
+        if (cols === 0) {
+            throw new Error("Need to add a button before adding an icon!");
+        }
+        let lastButton = lastRow[cols - 1];
+        if (typeof lastButton === "string") {
+            lastButton = { text: lastButton };
+            lastRow[cols - 1] = lastButton;
+        }
+        lastButton.icon_custom_emoji_id = icon;
+        return this;
     }
     /**
      * Make the current keyboard persistent. See
-     * https://grammy.dev/plugins/keyboard.html#persistent-keyboards for more
+     * https://grammy.dev/plugins/keyboard#persistent-keyboards for more
      * details.
      *
      * Keyboards are not persistent by default, use this function to enable it
@@ -9531,7 +10541,7 @@ class Keyboard {
     }
     /**
      * Make the current keyboard selective. See
-     * https://grammy.dev/plugins/keyboard.html#selectively-send-custom-keyboards
+     * https://grammy.dev/plugins/keyboard#selectively-send-custom-keyboards
      * for more details.
      *
      * Keyboards are non-selective by default, use this function to enable it
@@ -9546,7 +10556,7 @@ class Keyboard {
     }
     /**
      * Make the current keyboard one-time. See
-     * https://grammy.dev/plugins/keyboard.html#one-time-custom-keyboards for
+     * https://grammy.dev/plugins/keyboard#one-time-custom-keyboards for
      * more details.
      *
      * Keyboards are non-one-time by default, use this function to enable it
@@ -9561,7 +10571,7 @@ class Keyboard {
     }
     /**
      * Make the current keyboard resized. See
-     * https://grammy.dev/plugins/keyboard.html#resize-custom-keyboard for more
+     * https://grammy.dev/plugins/keyboard#resize-custom-keyboard for more
      * details.
      *
      * Keyboards are non-resized by default, use this function to enable it
@@ -9576,7 +10586,7 @@ class Keyboard {
     }
     /**
      * Set the current keyboard's input field placeholder. See
-     * https://grammy.dev/plugins/keyboard.html#input-field-placeholder for more
+     * https://grammy.dev/plugins/keyboard#input-field-placeholder for more
      * details.
      *
      * @param value The placeholder text
@@ -9646,7 +10656,7 @@ class Keyboard {
      * [d e f]
      *
      * [a b c]     [  a  ]
-     * [d e f]  ~> [b c d]    (3 colums, { fillLastRow: true })
+     * [d e f]  ~> [b c d]    (3 columns, { fillLastRow: true })
      * [g h i]     [e f g]
      * [  j  ]     [h i j]
      * ```
@@ -9742,7 +10752,7 @@ exports.Keyboard = Keyboard;
  * ```
  *
  * Be sure to to check the
- * [documentation](https://grammy.dev/plugins/keyboard.html#inline-keyboards) on
+ * [documentation](https://grammy.dev/plugins/keyboard#inline-keyboards) on
  * inline keyboards in grammY.
  */
 class InlineKeyboard {
@@ -9787,7 +10797,7 @@ class InlineKeyboard {
      * Adds a new URL button. Telegram clients will open the provided URL when
      * the button is pressed.
      *
-     * @param text The text to display
+     * @param text The text to display, and optional styling information
      * @param url HTTP or tg:// url to be opened when the button is pressed. Links tg://user?id=<user_id> can be used to mention a user by their ID without using a username, if this is allowed by their privacy settings.
      */
     url(text, url) {
@@ -9797,11 +10807,11 @@ class InlineKeyboard {
      * Creates a new URL button. Telegram clients will open the provided URL
      * when the button is pressed.
      *
-     * @param text The text to display
+     * @param text The text to display, and optional styling information
      * @param url HTTP or tg:// url to be opened when the button is pressed. Links tg://user?id=<user_id> can be used to mention a user by their ID without using a username, if this is allowed by their privacy settings.
      */
     static url(text, url) {
-        return { text, url };
+        return typeof text === "string" ? { text, url } : { ...text, url };
     }
     /**
      * Adds a new callback query button. The button contains a text and a custom
@@ -9818,10 +10828,10 @@ class InlineKeyboard {
      * bot.on('callback_query:data',    ctx => { ... })
      * ```
      *
-     * @param text The text to display
+     * @param text The text to display, and optional styling information
      * @param data The callback data to send back to your bot (default = text)
      */
-    text(text, data = text) {
+    text(text, data = typeof text === "string" ? text : text.text) {
         return this.add(InlineKeyboard.text(text, data));
     }
     /**
@@ -9839,16 +10849,18 @@ class InlineKeyboard {
      * bot.on('callback_query:data',    ctx => { ... })
      * ```
      *
-     * @param text The text to display
+     * @param text The text to display, and optional styling information
      * @param data The callback data to send back to your bot (default = text)
      */
-    static text(text, data = text) {
-        return { text, callback_data: data };
+    static text(text, data = typeof text === "string" ? text : text.text) {
+        return typeof text === "string"
+            ? { text, callback_data: data }
+            : { ...text, callback_data: data };
     }
     /**
      * Adds a new web app button, confer https://core.telegram.org/bots/webapps
      *
-     * @param text The text to display
+     * @param text The text to display, and optional styling information
      * @param url An HTTPS URL of a Web App to be opened with additional data
      */
     webApp(text, url) {
@@ -9857,18 +10869,21 @@ class InlineKeyboard {
     /**
      * Creates a new web app button, confer https://core.telegram.org/bots/webapps
      *
-     * @param text The text to display
+     * @param text The text to display, and optional styling information
      * @param url An HTTPS URL of a Web App to be opened with additional data
      */
     static webApp(text, url) {
-        return { text, web_app: { url } };
+        const web_app = typeof url === "string" ? { url } : url;
+        return typeof text === "string"
+            ? { text, web_app }
+            : { ...text, web_app };
     }
     /**
      * Adds a new login button. This can be used as a replacement for the
      * Telegram Login Widget. You must specify an HTTPS URL used to
      * automatically authorize the user.
      *
-     * @param text The text to display
+     * @param text The text to display, and optional styling information
      * @param loginUrl The login URL as string or `LoginUrl` object
      */
     login(text, loginUrl) {
@@ -9879,16 +10894,16 @@ class InlineKeyboard {
      * Telegram Login Widget. You must specify an HTTPS URL used to
      * automatically authorize the user.
      *
-     * @param text The text to display
+     * @param text The text to display, and optional styling information
      * @param loginUrl The login URL as string or `LoginUrl` object
      */
     static login(text, loginUrl) {
-        return {
-            text,
-            login_url: typeof loginUrl === "string"
-                ? { url: loginUrl }
-                : loginUrl,
-        };
+        const login_url = typeof loginUrl === "string"
+            ? { url: loginUrl }
+            : loginUrl;
+        return typeof text === "string"
+            ? { text, login_url }
+            : { ...text, login_url };
     }
     /**
      * Adds a new inline query button. Telegram clients will let the user pick a
@@ -9902,7 +10917,7 @@ class InlineKeyboard {
      * bot.on('inline_query', ctx => { ... })
      * ```
      *
-     * @param text The text to display
+     * @param text The text to display, and optional styling information
      * @param query The (optional) inline query string to prefill
      */
     switchInline(text, query = "") {
@@ -9920,11 +10935,13 @@ class InlineKeyboard {
      * bot.on('inline_query', ctx => { ... })
      * ```
      *
-     * @param text The text to display
+     * @param text The text to display, and optional styling information
      * @param query The (optional) inline query string to prefill
      */
     static switchInline(text, query = "") {
-        return { text, switch_inline_query: query };
+        return typeof text === "string"
+            ? { text, switch_inline_query: query }
+            : { ...text, switch_inline_query: query };
     }
     /**
      * Adds a new inline query button that acts on the current chat. The
@@ -9938,7 +10955,7 @@ class InlineKeyboard {
      * bot.on('inline_query', ctx => { ... })
      * ```
      *
-     * @param text The text to display
+     * @param text The text to display, and optional styling information
      * @param query The (optional) inline query string to prefill
      */
     switchInlineCurrent(text, query = "") {
@@ -9956,11 +10973,13 @@ class InlineKeyboard {
      * bot.on('inline_query', ctx => { ... })
      * ```
      *
-     * @param text The text to display
+     * @param text The text to display, and optional styling information
      * @param query The (optional) inline query string to prefill
      */
     static switchInlineCurrent(text, query = "") {
-        return { text, switch_inline_query_current_chat: query };
+        return typeof text === "string"
+            ? { text, switch_inline_query_current_chat: query }
+            : { ...text, switch_inline_query_current_chat: query };
     }
     /**
      * Adds a new inline query button. Telegram clients will let the user pick a
@@ -9974,7 +10993,7 @@ class InlineKeyboard {
      * bot.on('inline_query', ctx => { ... })
      * ```
      *
-     * @param text The text to display
+     * @param text The text to display, and optional styling information
      * @param query The query object describing which chats can be picked
      */
     switchInlineChosen(text, query = {}) {
@@ -9992,11 +11011,38 @@ class InlineKeyboard {
      * bot.on('inline_query', ctx => { ... })
      * ```
      *
-     * @param text The text to display
+     * @param text The text to display, and optional styling information
      * @param query The query object describing which chats can be picked
      */
     static switchInlineChosen(text, query = {}) {
-        return { text, switch_inline_query_chosen_chat: query };
+        return typeof text === "string"
+            ? { text, switch_inline_query_chosen_chat: query }
+            : { ...text, switch_inline_query_chosen_chat: query };
+    }
+    /**
+     * Adds a new copy text button. When clicked, the specified text will be
+     * copied to the clipboard.
+     *
+     * @param text The text to display, and optional styling information
+     * @param copyText The text to be copied to the clipboard
+     */
+    copyText(text, copyText) {
+        return this.add(InlineKeyboard.copyText(text, copyText));
+    }
+    /**
+     * Creates a new copy text button. When clicked, the specified text will be
+     * copied to the clipboard.
+     *
+     * @param text The text to display, and optional styling information
+     * @param copyText The text to be copied to the clipboard
+     */
+    static copyText(text, copyText) {
+        const copy_text = typeof copyText === "string"
+            ? { text: copyText }
+            : copyText;
+        return typeof text === "string"
+            ? { text, copy_text }
+            : { ...text, copy_text };
     }
     /**
      * Adds a new game query button, confer
@@ -10004,7 +11050,7 @@ class InlineKeyboard {
      *
      * This type of button must always be the first button in the first row.
      *
-     * @param text The text to display
+     * @param text The text to display, and optional styling information
      */
     game(text) {
         return this.add(InlineKeyboard.game(text));
@@ -10015,10 +11061,13 @@ class InlineKeyboard {
      *
      * This type of button must always be the first button in the first row.
      *
-     * @param text The text to display
+     * @param text The text to display, and optional styling information
      */
     static game(text) {
-        return { text, callback_game: {} };
+        const callback_game = {};
+        return typeof text === "string"
+            ? { text, callback_game }
+            : { ...text, callback_game };
     }
     /**
      * Adds a new payment button, confer
@@ -10027,7 +11076,7 @@ class InlineKeyboard {
      * This type of button must always be the first button in the first row and
      * can only be used in invoice messages.
      *
-     * @param text The text to display. Substrings “⭐” and “XTR” in the buttons's text will be replaced with a Telegram Star icon.
+     * @param text The text to display, and optional styling information. Substrings “⭐” and “XTR” in the buttons's text will be replaced with a Telegram Star icon.
      */
     pay(text) {
         return this.add(InlineKeyboard.pay(text));
@@ -10039,10 +11088,98 @@ class InlineKeyboard {
      * This type of button must always be the first button in the first row and
      * can only be used in invoice messages.
      *
-     * @param text The text to display. Substrings “⭐” and “XTR” in the buttons's text will be replaced with a Telegram Star icon.
+     * @param text The text to display, and optional styling information. Substrings “⭐” and “XTR” in the buttons's text will be replaced with a Telegram Star icon.
      */
     static pay(text) {
-        return { text, pay: true };
+        const pay = true;
+        return typeof text === "string" ? { text, pay } : { ...text, pay };
+    }
+    /**
+     * Adds a style to the last added button of the inline keyboard.
+     *
+     * ```ts
+     * const keyboard = new InlineKeyboard()
+     *   .text('blue button')
+     *   .style('primary')
+     * ```
+     *
+     * @param style Style of the button
+     */
+    style(style) {
+        const rows = this.inline_keyboard.length;
+        if (rows === 0) {
+            throw new Error("Need to add a button before applying a style!");
+        }
+        const lastRow = this.inline_keyboard[rows - 1];
+        const cols = lastRow.length;
+        if (cols === 0) {
+            throw new Error("Need to add a button before applying a style!");
+        }
+        lastRow[cols - 1].style = style;
+        return this;
+    }
+    /**
+     * Adds a danger style to the last added button of the inline keyboard.
+     * Alias for `.style('danger')`.
+     *
+     * ```ts
+     * const keyboard = new InlineKeyboard()
+     *   .text('red button')
+     *   .danger()
+     * ```
+     */
+    danger() {
+        return this.style("danger");
+    }
+    /**
+     * Adds a success style to the last added button of the inline keyboard.
+     * Alias for `.style('success')`.
+     *
+     * ```ts
+     * const keyboard = new InlineKeyboard()
+     *   .text('green button')
+     *   .success()
+     * ```
+     */
+    success() {
+        return this.style("success");
+    }
+    /**
+     * Adds a primary style to the last added button of the inline keyboard.
+     * Alias for `.style('primary')`.
+     *
+     * ```ts
+     * const keyboard = new InlineKeyboard()
+     *   .text('blue button')
+     *   .primary()
+     * ```
+     */
+    primary() {
+        return this.style("primary");
+    }
+    /**
+     * Adds a custom emoji icon to the last added button of the inline keyboard.
+     *
+     * ```ts
+     * const keyboard = new InlineKeyboard()
+     *   .text('button with icon')
+     *   .icon(myCustomEmojiIconIdentifier)
+     * ```
+     *
+     * @param icon Unique identifier of the custom emoji shown before the text of the button
+     */
+    icon(icon) {
+        const rows = this.inline_keyboard.length;
+        if (rows === 0) {
+            throw new Error("Need to add a button before adding an icon!");
+        }
+        const lastRow = this.inline_keyboard[rows - 1];
+        const cols = lastRow.length;
+        if (cols === 0) {
+            throw new Error("Need to add a button before adding an icon!");
+        }
+        lastRow[cols - 1].icon_custom_emoji_id = icon;
+        return this;
     }
     /**
      * Creates a new inline keyboard that contains the transposed grid of
@@ -10106,7 +11243,7 @@ class InlineKeyboard {
      * [d e f]
      *
      * [a b c]     [  a  ]
-     * [d e f]  ~> [b c d]    (3 colums, { fillLastRow: true })
+     * [d e f]  ~> [b c d]    (3 columns, { fillLastRow: true })
      * [g h i]     [e f g]
      * [  j  ]     [h i j]
      * ```
@@ -10197,7 +11334,10 @@ function reflow(grid, columns, { fillLastRow = false }) {
 "use strict";
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.MemorySessionStorage = exports.enhanceStorage = exports.lazySession = exports.session = void 0;
+exports.MemorySessionStorage = void 0;
+exports.session = session;
+exports.lazySession = lazySession;
+exports.enhanceStorage = enhanceStorage;
 const platform_node_js_1 = __nccwpck_require__(7876);
 const debug = (0, platform_node_js_1.debug)("grammy:session");
 /**
@@ -10242,7 +11382,7 @@ const debug = (0, platform_node_js_1.debug)("grammy:session");
  * You can delete the session data by setting `ctx.session` to `null` or
  * `undefined`.
  *
- * Check out the [documentation](https://grammy.dev/plugins/session.html) on the
+ * Check out the [documentation](https://grammy.dev/plugins/session) on the
  * website to know more about how sessions work in grammY.
  *
  * @param options Optional configuration to pass to the session middleware
@@ -10252,7 +11392,6 @@ function session(options = {}) {
         ? strictMultiSession(options)
         : strictSingleSession(options);
 }
-exports.session = session;
 function strictSingleSession(options) {
     const { initial, storage, getSessionKey, custom } = fillDefaults(options);
     return async (ctx, next) => {
@@ -10310,7 +11449,7 @@ function strictMultiSession(options) {
  * ```
  *
  * Check out the
- * [documentation](https://grammy.dev/plugins/session.html#lazy-sessions) on the
+ * [documentation](https://grammy.dev/plugins/session#lazy-sessions) on the
  * website to know more about how lazy sessions work in grammY.
  *
  * @param options Optional configuration to pass to the session middleware
@@ -10330,7 +11469,6 @@ function lazySession(options = {}) {
         await propSession.finish();
     };
 }
-exports.lazySession = lazySession;
 /**
  * Internal class that manages a single property on the session. Can be used
  * both in a strict and a lazy way. Works by using `Object.defineProperty` to
@@ -10432,13 +11570,21 @@ class PropertySession {
     }
 }
 function fillDefaults(opts = {}) {
-    let { getSessionKey = defaultGetSessionKey, initial, storage } = opts;
+    let { prefix = "", getSessionKey = defaultGetSessionKey, initial, storage, } = opts;
     if (storage == null) {
         debug("Storing session data in memory, all data will be lost when the bot restarts.");
         storage = new MemorySessionStorage();
     }
     const custom = getSessionKey !== defaultGetSessionKey;
-    return { initial, storage, getSessionKey, custom };
+    return {
+        initial,
+        storage,
+        getSessionKey: async (ctx) => {
+            const key = await getSessionKey(ctx);
+            return key === undefined ? undefined : prefix + key;
+        },
+        custom,
+    };
 }
 /** Stores session data per chat by default */
 function defaultGetSessionKey(ctx) {
@@ -10483,7 +11629,6 @@ function enhanceStorage(options) {
     }
     return wrapStorage(storage);
 }
-exports.enhanceStorage = enhanceStorage;
 function compatStorage(storage) {
     return {
         read: async (k) => {
@@ -10572,11 +11717,11 @@ function wrapStorage(storage) {
  * This class is used as default if you do not provide a storage adapter, e.g.
  * to your database.
  *
- * This storage adapter features expiring sessions. When instantiating this class
- * yourself, you can pass a time to live in milliseconds that will be used for
- * each session object. If a session for a user expired, the session data will
- * be discarded on its first read, and a fresh session object as returned by the
- * `initial` option (or undefined) will be put into place.
+ * This storage adapter features expiring sessions. When instantiating this
+ * class yourself, you can pass a time to live in milliseconds that will be used
+ * for each session object. If a session for a user expired, the session data
+ * will be discarded on its first read, and a fresh session object as returned
+ * by the `initial` option (or undefined) will be put into place.
  */
 class MemorySessionStorage {
     /**
@@ -10652,7 +11797,7 @@ function addExpiryDate(value, ttl) {
 "use strict";
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.webhookCallback = void 0;
+exports.webhookCallback = webhookCallback;
 const platform_node_js_1 = __nccwpck_require__(7876);
 const frameworks_js_1 = __nccwpck_require__(8575);
 const debugErr = (0, platform_node_js_1.debug)("grammy:error");
@@ -10663,7 +11808,56 @@ const callbackAdapter = (update, callback, header, unauthorized = () => callback
     unauthorized,
 });
 const adapters = { ...frameworks_js_1.adapters, callback: callbackAdapter };
-function webhookCallback(bot, adapter = platform_node_js_1.defaultAdapter, onTimeout = "throw", timeoutMilliseconds = 10000, secretToken) {
+/**
+ * Performs a constant-time comparison of two strings to prevent timing attacks.
+ * This function always compares all bytes regardless of early differences,
+ * ensuring the comparison time does not leak information about the secret.
+ *
+ * @param header The header value from the request (X-Telegram-Bot-Api-Secret-Token)
+ * @param token The expected secret token configured for the webhook
+ * @returns true if strings are equal, false otherwise
+ */
+function compareSecretToken(header, token) {
+    // If no token is configured, accept all requests
+    if (token === undefined) {
+        return true;
+    }
+    // If token is configured but no header provided, reject
+    if (header === undefined) {
+        return false;
+    }
+    // Convert strings to Uint8Array for byte-by-byte comparison
+    const encoder = new TextEncoder();
+    const headerBytes = encoder.encode(header);
+    const tokenBytes = encoder.encode(token);
+    // If lengths differ, reject
+    if (headerBytes.length !== tokenBytes.length) {
+        return false;
+    }
+    let hasDifference = 0;
+    // Always iterate exactly tokenBytes.length times to prevent timing attacks
+    // that could reveal the secret token's length. The loop time is constant
+    // relative to the secret token length, not the attacker's input length.
+    for (let i = 0; i < tokenBytes.length; i++) {
+        // If header is shorter than token, pad with 0 for comparison
+        const headerByte = i < headerBytes.length ? headerBytes[i] : 0;
+        const tokenByte = tokenBytes[i];
+        // If bytes differ, mark that we found a difference
+        // Using bitwise OR to maintain constant-time (no short-circuit evaluation)
+        hasDifference |= headerByte ^ tokenByte;
+    }
+    // Return true only if no differences were found
+    return hasDifference === 0;
+}
+function webhookCallback(bot, adapter = platform_node_js_1.defaultAdapter, onTimeout, timeoutMilliseconds, secretToken) {
+    if (bot.isRunning()) {
+        throw new Error("Bot is already running via long polling, the webhook setup won't receive any updates!");
+    }
+    else {
+        bot.start = () => {
+            throw new Error("You already started the bot via webhooks, calling `bot.start()` starts the bot with long polling and this will prevent your webhook setup from receiving any updates!");
+        };
+    }
     const { onTimeout: timeout = "throw", timeoutMilliseconds: ms = 10000, secretToken: token, } = typeof onTimeout === "object"
         ? onTimeout
         : { onTimeout, timeoutMilliseconds, secretToken };
@@ -10672,37 +11866,36 @@ function webhookCallback(bot, adapter = platform_node_js_1.defaultAdapter, onTim
         ? adapters[adapter]
         : adapter;
     return async (...args) => {
-        const { update, respond, unauthorized, end, handlerReturn, header } = server(...args);
+        var _a;
+        const handler = server(...args);
         if (!initialized) {
             // Will dedupe concurrently incoming calls from several updates
             await bot.init();
             initialized = true;
         }
-        if (header !== token) {
-            await unauthorized();
-            // TODO: investigate deno bug that happens when this console logging is removed
-            console.log(handlerReturn);
-            return handlerReturn;
+        if (!compareSecretToken(handler.header, token)) {
+            await handler.unauthorized();
+            return handler.handlerReturn;
         }
         let usedWebhookReply = false;
         const webhookReplyEnvelope = {
             async send(json) {
                 usedWebhookReply = true;
-                await respond(json);
+                await handler.respond(json);
             },
         };
-        await timeoutIfNecessary(bot.handleUpdate(await update, webhookReplyEnvelope), typeof timeout === "function" ? () => timeout(...args) : timeout, ms);
+        await timeoutIfNecessary(bot.handleUpdate(await handler.update, webhookReplyEnvelope), typeof timeout === "function" ? () => timeout(...args) : timeout, ms);
         if (!usedWebhookReply)
-            end === null || end === void 0 ? void 0 : end();
-        return handlerReturn;
+            (_a = handler.end) === null || _a === void 0 ? void 0 : _a.call(handler);
+        return handler.handlerReturn;
     };
 }
-exports.webhookCallback = webhookCallback;
 function timeoutIfNecessary(task, onTimeout, timeout) {
     if (timeout === Infinity)
         return task;
     return new Promise((resolve, reject) => {
         const handle = setTimeout(() => {
+            debugErr(`Request timed out after ${timeout} ms`);
             if (onTimeout === "throw") {
                 reject(new Error(`Request timed out after ${timeout} ms`));
             }
@@ -10755,7 +11948,7 @@ class Api {
     /**
      * Constructs a new instance of `Api`. It is independent from all other
      * instances of this class. For example, this lets you install a custom set
-     * if transformers.
+     * of transformers.
      *
      * @param token Bot API token obtained from [@BotFather](https://t.me/BotFather)
      * @param options Optional API client options for the underlying client instance
@@ -10872,6 +12065,20 @@ class Api {
         return this.raw.sendMessage({ chat_id, text, ...other }, signal);
     }
     /**
+     * Use this method to stream a partial message to a user while the message is being generated. Returns True on success.
+     *
+     * @param chat_id Unique identifier for the target private chat
+     * @param draft_id Unique identifier of the message draft; must be non-zero. Changes of drafts with the same identifier are animated
+     * @param text Text of the message to be sent, 1-4096 characters after entities parsing
+     * @param other Optional remaining parameters, confer the official reference below
+     * @param signal Optional `AbortSignal` to cancel the request
+     *
+     * **Official reference:** https://core.telegram.org/bots/api#sendmessagedraft
+     */
+    sendMessageDraft(chat_id, draft_id, text, other, signal) {
+        return this.raw.sendMessageDraft({ chat_id, draft_id, text, ...other }, signal);
+    }
+    /**
      * Use this method to forward messages of any kind. Service messages and messages with protected content can't be forwarded. On success, the sent Message is returned.
      *
      * @param chat_id Unique identifier for the target chat or username of the target channel (in the format @channelusername)
@@ -10905,7 +12112,7 @@ class Api {
         }, signal);
     }
     /**
-     * Use this method to copy messages of any kind. Service messages, giveaway messages, giveaway winners messages, and invoice messages can't be copied. A quiz poll can be copied only if the value of the field correct_option_id is known to the bot. The method is analogous to the method forwardMessage, but the copied message doesn't have a link to the original message. Returns the MessageId of the sent message on success.
+     * Use this method to copy messages of any kind. Service messages, paid media messages, giveaway messages, giveaway winners messages, and invoice messages can't be copied. A quiz poll can be copied only if the value of the field correct_option_id is known to the bot. The method is analogous to the method forwardMessage, but the copied message doesn't have a link to the original message. Returns the MessageId of the sent message on success.
      *
      * @param chat_id Unique identifier for the target chat or username of the target channel (in the format @channelusername)
      * @param from_chat_id Unique identifier for the chat where the original message was sent (or channel username in the format @channelusername)
@@ -10919,7 +12126,7 @@ class Api {
         return this.raw.copyMessage({ chat_id, from_chat_id, message_id, ...other }, signal);
     }
     /**
-     * Use this method to copy messages of any kind. If some of the specified messages can't be found or copied, they are skipped. Service messages, giveaway messages, giveaway winners messages, and invoice messages can't be copied. A quiz poll can be copied only if the value of the field correct_option_id is known to the bot. The method is analogous to the method forwardMessages, but the copied messages don't have a link to the original message. Album grouping is kept for copied messages. On success, an array of MessageId of the sent messages is returned.
+     * Use this method to copy messages of any kind. If some of the specified messages can't be found or copied, they are skipped. Service messages, paid media messages, giveaway messages, giveaway winners messages, and invoice messages can't be copied. A quiz poll can be copied only if the value of the field correct_option_id is known to the bot. The method is analogous to the method forwardMessages, but the copied messages don't have a link to the original message. Album grouping is kept for copied messages. On success, an array of MessageId of the sent messages is returned.
      *
      * @param chat_id Unique identifier for the target chat or username of the target channel (in the format @channelusername)
      * @param from_chat_id Unique identifier for the chat where the original messages were sent (or channel username in the format @channelusername)
@@ -11113,6 +12320,20 @@ class Api {
         return this.raw.stopMessageLiveLocation({ inline_message_id, ...other }, signal);
     }
     /**
+     * Use this method to send paid media. On success, the sent Message is returned.
+     *
+     * @param chat_id Unique identifier for the target chat or username of the target channel (in the format @channelusername)
+     * @param star_count The number of Telegram Stars that must be paid to buy access to the media
+     * @param media An array describing the media to be sent; up to 10 items
+     * @param other Optional remaining parameters, confer the official reference below
+     * @param signal Optional `AbortSignal` to cancel the request
+     *
+     * **Official reference:** https://core.telegram.org/bots/api#sendpaidmedia
+     */
+    sendPaidMedia(chat_id, star_count, media, other, signal) {
+        return this.raw.sendPaidMedia({ chat_id, star_count, media, ...other }, signal);
+    }
+    /**
      * Use this method to send information about a venue. On success, the sent Message is returned.
      *
      * @param chat_id Unique identifier for the target chat or username of the target channel (in the format @channelusername)
@@ -11147,20 +12368,61 @@ class Api {
      *
      * @param chat_id Unique identifier for the target chat or username of the target channel (in the format @channelusername)
      * @param question Poll question, 1-300 characters
-     * @param options A list of answer options, 2-10 strings 1-100 characters each
+     * @param options A list of answer options, 2-12 strings 1-100 characters each
      * @param other Optional remaining parameters, confer the official reference below
      * @param signal Optional `AbortSignal` to cancel the request
      *
      * **Official reference:** https://core.telegram.org/bots/api#sendpoll
      */
     sendPoll(chat_id, question, options, other, signal) {
-        return this.raw.sendPoll({ chat_id, question, options, ...other }, signal);
+        const opts = options.map((o) => typeof o === "string" ? { text: o } : o);
+        return this.raw.sendPoll({ chat_id, question, options: opts, ...other }, signal);
+    }
+    /**
+     * Use this method to send a checklist on behalf of a connected business account. On success, the sent Message is returned.
+     *
+     * @param business_connection_id Unique identifier of the business connection on behalf of which the message will be sent
+     * @param chat_id Unique identifier for the target chat
+     * @param checklist An object for the checklist to send
+     * @param other Optional remaining parameters, confer the official reference below
+     * @param signal Optional `AbortSignal` to cancel the request
+     *
+     * **Official reference:** https://core.telegram.org/bots/api#sendchecklist
+     */
+    sendChecklist(business_connection_id, chat_id, checklist, other, signal) {
+        return this.raw.sendChecklist({
+            business_connection_id,
+            chat_id,
+            checklist,
+            ...other,
+        }, signal);
+    }
+    /**
+     * Use this method to edit a checklist on behalf of a connected business account. On success, the edited Message is returned.
+     *
+     * @param business_connection_id Unique identifier of the business connection on behalf of which the message will be sent
+     * @param chat_id Unique identifier for the target chat
+     * @param message_id Unique identifier for the target message
+     * @param checklist An object for the new checklist
+     * @param other Optional remaining parameters, confer the official reference below
+     * @param signal Optional `AbortSignal` to cancel the request
+     *
+     * **Official reference:** https://core.telegram.org/bots/api#editmessagechecklist
+     */
+    editMessageChecklist(business_connection_id, chat_id, message_id, checklist, other, signal) {
+        return this.raw.editMessageChecklist({
+            business_connection_id,
+            chat_id,
+            message_id,
+            checklist,
+            ...other,
+        }, signal);
     }
     /**
      * Use this method to send an animated emoji that will display a random value. On success, the sent Message is returned.
      *
      * @param chat_id Unique identifier for the target chat or username of the target channel (in the format @channelusername)
-     * @param emoji Emoji on which the dice throw animation is based. Currently, must be one of “🎲”, “🎯”, “🏀”, “⚽”, or “🎰”. Dice can have values 1-6 for “🎲” and “🎯”, values 1-5 for “🏀” and “⚽”, and values 1-64 for “🎰”. Defaults to “🎲”
+     * @param emoji Emoji on which the dice throw animation is based. Currently, must be one of “🎲”, “🎯”, “🏀”, “⚽”, “🎳”, or “🎰”. Dice can have values 1-6 for “🎲”, “🎯” and “🎳”, values 1-5 for “🏀” and “⚽”, and values 1-64 for “🎰”. Defaults to “🎲”
      * @param other Optional remaining parameters, confer the official reference below
      * @param signal Optional `AbortSignal` to cancel the request
      *
@@ -11170,15 +12432,15 @@ class Api {
         return this.raw.sendDice({ chat_id, emoji, ...other }, signal);
     }
     /**
-     * Use this method to change the chosen reactions on a message. Service messages can't be reacted to. Automatically forwarded messages from a channel to its discussion group have the same available reactions as messages in the channel. In albums, bots must react to the first message. Returns True on success.
+     * Use this method to change the chosen reactions on a message. Service messages of some types can't be reacted to. Automatically forwarded messages from a channel to its discussion group have the same available reactions as messages in the channel. Bots can't use paid reactions. Returns True on success.
      *
      * @param chat_id Unique identifier for the target chat or username of the target channel (in the format @channelusername)
      * @param message_id Identifier of the target message
-     * @param reaction A list of reaction types to set on the message. Currently, as non-premium users, bots can set up to one reaction per message. A custom emoji reaction can be used if it is either already present on the message or explicitly allowed by chat administrators.
+     * @param reaction A list of reaction types to set on the message. Currently, as non-premium users, bots can set up to one reaction per message. A custom emoji reaction can be used if it is either already present on the message or explicitly allowed by chat administrators. Paid reactions can't be used by bots.
      * @param other Optional remaining parameters, confer the official reference below
      * @param signal Optional `AbortSignal` to cancel the request
      *
-     * **Official reference:** https://core.telegram.org/bots/api#senddice
+     * **Official reference:** https://core.telegram.org/bots/api#setmessagereaction
      */
     setMessageReaction(chat_id, message_id, reaction, other, signal) {
         return this.raw.setMessageReaction({
@@ -11195,7 +12457,7 @@ class Api {
      *
      * We only recommend using this method when a response from the bot will take a noticeable amount of time to arrive.
      *
-     * @param chat_id Unique identifier for the target chat or username of the target channel (in the format @channelusername)
+     * @param chat_id Unique identifier for the target chat or username of the target supergroup (in the format @supergroupusername). Channel chats and channel direct messages chats aren't supported.
      * @param action Type of action to broadcast. Choose one, depending on what the user is about to receive: typing for text messages, upload_photo for photos, record_video or upload_video for videos, record_voice or upload_voice for voice notes, upload_document for general files, choose_sticker for stickers, find_location for location data, record_video_note or upload_video_note for video notes.
      * @param other Optional remaining parameters, confer the official reference below
      * @param signal Optional `AbortSignal` to cancel the request
@@ -11218,6 +12480,30 @@ class Api {
         return this.raw.getUserProfilePhotos({ user_id, ...other }, signal);
     }
     /**
+     * Use this method to get a list of profile audios for a user. Returns a UserProfileAudios object.
+     *
+     * @param user_id Unique identifier of the target user
+     * @param other Optional remaining parameters, confer the official reference below
+     * @param signal Optional `AbortSignal` to cancel the request
+     *
+     * **Official reference:** https://core.telegram.org/bots/api#getuserprofileaudios
+     */
+    getUserProfileAudios(user_id, other, signal) {
+        return this.raw.getUserProfileAudios({ user_id, ...other }, signal);
+    }
+    /**
+     * Changes the emoji status for a given user that previously allowed the bot to manage their emoji status via the Mini App method requestEmojiStatusAccess. Returns True on success.
+     *
+     * @param user_id Unique identifier of the target user
+     * @param other Optional remaining parameters, confer the official reference below
+     * @param signal Optional `AbortSignal` to cancel the request
+     *
+     * **Official reference:** https://core.telegram.org/bots/api#setuseremojistatus
+     */
+    setUserEmojiStatus(user_id, other, signal) {
+        return this.raw.setUserEmojiStatus({ user_id, ...other }, signal);
+    }
+    /**
      * Use this method to get the list of boosts added to a chat by a user. Requires administrator rights in the chat. Returns a UserChatBoosts object.
      *
      * @param chat_id Unique identifier for the chat or username of the channel (in the format @channelusername)
@@ -11228,6 +12514,30 @@ class Api {
      */
     getUserChatBoosts(chat_id, user_id, signal) {
         return this.raw.getUserChatBoosts({ chat_id, user_id }, signal);
+    }
+    /**
+     * Returns the gifts owned and hosted by a user. Returns OwnedGifts on success.
+     *
+     * @param user_id Unique identifier of the user
+     * @param other Optional remaining parameters, confer the official reference below
+     * @param signal Optional `AbortSignal` to cancel the request
+     *
+     * **Official reference:** https://core.telegram.org/bots/api#getusergifts
+     */
+    getUserGifts(user_id, other, signal) {
+        return this.raw.getUserGifts({ user_id, ...other }, signal);
+    }
+    /**
+     * Returns the gifts owned by a chat. Returns OwnedGifts on success.
+     *
+     * @param chat_id Unique identifier for the target chat or username of the target channel (in the format @channelusername)
+     * @param other Optional remaining parameters, confer the official reference below
+     * @param signal Optional `AbortSignal` to cancel the request
+     *
+     * **Official reference:** https://core.telegram.org/bots/api#getchatgifts
+     */
+    getChatGifts(chat_id, other, signal) {
+        return this.raw.getChatGifts({ chat_id, ...other }, signal);
     }
     /**
      * Use this method to get information about the connection of the bot with a business account. Returns a BusinessConnection object on success.
@@ -11324,6 +12634,19 @@ class Api {
         return this.raw.setChatAdministratorCustomTitle({ chat_id, user_id, custom_title }, signal);
     }
     /**
+     * Use this method to set a tag for a regular member in a group or a supergroup. The bot must be an administrator in the chat for this to work and must have the “can_manage_tags” administrator right. Returns True on success.
+     *
+     * @param chat_id Unique identifier for the target chat or username of the target supergroup (in the format @supergroupusername)
+     * @param user_id Unique identifier of the target user
+     * @param tag New tag for the member; 0-16 characters, emoji are not allowed
+     * @param signal Optional `AbortSignal` to cancel the request
+     *
+     * **Official reference:** https://core.telegram.org/bots/api#setChatMemberTag
+     */
+    setChatMemberTag(chat_id, user_id, tag, signal) {
+        return this.raw.setChatMemberTag({ chat_id, user_id, tag }, signal);
+    }
+    /**
      * Use this method to ban a channel chat in a supergroup or a channel. Until the chat is unbanned, the owner of the banned chat won't be able to send messages on behalf of any of their channels. The bot must be an administrator in the supergroup or channel for this to work and must have the appropriate administrator rights. Returns True on success.
      *
      * @param chat_id Unique identifier for the target chat or username of the target channel (in the format @channelusername)
@@ -11352,12 +12675,13 @@ class Api {
      *
      * @param chat_id Unique identifier for the target chat or username of the target supergroup (in the format @supergroupusername)
      * @param permissions New default chat permissions
+     * @param other Optional remaining parameters, confer the official reference below
      * @param signal Optional `AbortSignal` to cancel the request
      *
      * **Official reference:** https://core.telegram.org/bots/api#setchatpermissions
      */
-    setChatPermissions(chat_id, permissions, signal) {
-        return this.raw.setChatPermissions({ chat_id, permissions }, signal);
+    setChatPermissions(chat_id, permissions, other, signal) {
+        return this.raw.setChatPermissions({ chat_id, permissions, ...other }, signal);
     }
     /**
      * Use this method to generate a new primary invite link for a chat; any previously generated primary link is revoked. The bot must be an administrator in the chat for this to work and must have the appropriate administrator rights. Returns the new invite link as String on success.
@@ -11385,7 +12709,7 @@ class Api {
         return this.raw.createChatInviteLink({ chat_id, ...other }, signal);
     }
     /**
-     *  Use this method to edit a non-primary invite link created by the bot. The bot must be an administrator in the chat for this to work and must have the appropriate administrator rights. Returns the edited invite link as a ChatInviteLink object.
+     * Use this method to edit a non-primary invite link created by the bot. The bot must be an administrator in the chat for this to work and must have the appropriate administrator rights. Returns the edited invite link as a ChatInviteLink object.
      *
      * @param chat_id Unique identifier for the target chat or username of the target channel (in the format @channelusername)
      * @param invite_link The invite link to edit
@@ -11398,7 +12722,34 @@ class Api {
         return this.raw.editChatInviteLink({ chat_id, invite_link, ...other }, signal);
     }
     /**
-     *  Use this method to revoke an invite link created by the bot. If the primary link is revoked, a new link is automatically generated. The bot must be an administrator in the chat for this to work and must have the appropriate administrator rights. Returns the revoked invite link as ChatInviteLink object.
+     * Use this method to create a subscription invite link for a channel chat. The bot must have the can_invite_users administrator rights. The link can be edited using the method editChatSubscriptionInviteLink or revoked using the method revokeChatInviteLink. Returns the new invite link as a ChatInviteLink object.
+     *
+     * @param chat_id Unique identifier for the target channel chat or username of the target channel (in the format @channelusername)
+     * @param subscription_period The number of seconds the subscription will be active for before the next payment. Currently, it must always be 2592000 (30 days).
+     * @param subscription_price The amount of Telegram Stars a user must pay initially and after each subsequent subscription period to be a member of the chat; 1-2500
+     * @param other Optional remaining parameters, confer the official reference below
+     * @param signal Optional `AbortSignal` to cancel the request
+     *
+     * **Official reference:** https://core.telegram.org/bots/api#createchatsubscriptioninvitelink
+     */
+    createChatSubscriptionInviteLink(chat_id, subscription_period, subscription_price, other, signal) {
+        return this.raw.createChatSubscriptionInviteLink({ chat_id, subscription_period, subscription_price, ...other }, signal);
+    }
+    /**
+     * Use this method to edit a subscription invite link created by the bot. The bot must have the can_invite_users administrator rights. Returns the edited invite link as a ChatInviteLink object.
+     *
+     * @param chat_id Unique identifier for the target chat or username of the target channel (in the format @channelusername)
+     * @param invite_link The invite link to edit
+     * @param other Optional remaining parameters, confer the official reference below
+     * @param signal Optional `AbortSignal` to cancel the request
+     *
+     * **Official reference:** https://core.telegram.org/bots/api#editchatsubscriptioninvitelink
+     */
+    editChatSubscriptionInviteLink(chat_id, invite_link, other, signal) {
+        return this.raw.editChatSubscriptionInviteLink({ chat_id, invite_link, ...other }, signal);
+    }
+    /**
+     * Use this method to revoke an invite link created by the bot. If the primary link is revoked, a new link is automatically generated. The bot must be an administrator in the chat for this to work and must have the appropriate administrator rights. Returns the revoked invite link as ChatInviteLink object.
      *
      * @param chat_id Unique identifier of the target chat or username of the target channel (in the format @channelusername)
      * @param invite_link The invite link to revoke
@@ -11432,6 +12783,32 @@ class Api {
      */
     declineChatJoinRequest(chat_id, user_id, signal) {
         return this.raw.declineChatJoinRequest({ chat_id, user_id }, signal);
+    }
+    /**
+     * Use this method to approve a suggested post in a direct messages chat. The bot must have the 'can_post_messages' administrator right in the corresponding channel chat.  Returns True on success.
+     *
+     * @param chat_id Unique identifier for the target direct messages chat
+     * @param message_id Identifier of a suggested post message to approve
+     * @param other Optional remaining parameters, confer the official reference below
+     * @param signal Optional `AbortSignal` to cancel the request
+     *
+     * **Official reference:** https://core.telegram.org/bots/api#approvesuggestedpost
+     */
+    approveSuggestedPost(chat_id, message_id, other, signal) {
+        return this.raw.approveSuggestedPost({ chat_id, message_id, ...other }, signal);
+    }
+    /**
+     * Use this method to decline a suggested post in a direct messages chat. The bot must have the 'can_manage_direct_messages' administrator right in the corresponding channel chat. Returns True on success.
+     *
+     * @param chat_id Unique identifier for the target direct messages chat
+     * @param message_id Identifier of a suggested post message to decline
+     * @param other Optional remaining parameters, confer the official reference below
+     * @param signal Optional `AbortSignal` to cancel the request
+     *
+     * **Official reference:** https://core.telegram.org/bots/api#declinesuggestedpost
+     */
+    declineSuggestedPost(chat_id, message_id, other, signal) {
+        return this.raw.declineSuggestedPost({ chat_id, message_id, ...other }, signal);
     }
     /**
      * Use this method to set a new profile photo for the chat. Photos can't be changed for private chats. The bot must be an administrator in the chat for this to work and must have the appropriate administrator rights. Returns True on success.
@@ -11481,7 +12858,7 @@ class Api {
         return this.raw.setChatDescription({ chat_id, description }, signal);
     }
     /**
-     * Use this method to add a message to the list of pinned messages in a chat. If the chat is not a private chat, the bot must be an administrator in the chat for this to work and must have the 'can_pin_messages' administrator right in a supergroup or 'can_edit_messages' administrator right in a channel. Returns True on success.
+     * Use this method to add a message to the list of pinned messages in a chat. In private chats and channel direct messages chats, all non-service messages can be pinned. Conversely, the bot must be an administrator with the 'can_pin_messages' right or the 'can_edit_messages' right to pin messages in groups and channels respectively. Returns True on success.
      *
      * @param chat_id Unique identifier for the target chat or username of the target channel (in the format @channelusername)
      * @param message_id Identifier of a message to pin
@@ -11494,7 +12871,7 @@ class Api {
         return this.raw.pinChatMessage({ chat_id, message_id, ...other }, signal);
     }
     /**
-     * Use this method to remove a message from the list of pinned messages in a chat. If the chat is not a private chat, the bot must be an administrator in the chat for this to work and must have the 'can_pin_messages' administrator right in a supergroup or 'can_edit_messages' administrator right in a channel. Returns True on success.
+     * Use this method to remove a message from the list of pinned messages in a chat. In private chats and channel direct messages chats, all messages can be unpinned. Conversely, the bot must be an administrator with the 'can_pin_messages' right or the 'can_edit_messages' right to unpin messages in groups and channels respectively. Returns True on success.
      *
      * @param chat_id Unique identifier for the target chat or username of the target channel (in the format @channelusername)
      * @param message_id Identifier of a message to unpin. If not specified, the most recent pinned message (by sending date) will be unpinned.
@@ -11503,11 +12880,11 @@ class Api {
      *
      * **Official reference:** https://core.telegram.org/bots/api#unpinchatmessage
      */
-    unpinChatMessage(chat_id, message_id, signal) {
-        return this.raw.unpinChatMessage({ chat_id, message_id }, signal);
+    unpinChatMessage(chat_id, message_id, other, signal) {
+        return this.raw.unpinChatMessage({ chat_id, message_id, ...other }, signal);
     }
     /**
-     * Use this method to clear the list of pinned messages in a chat. If the chat is not a private chat, the bot must be an administrator in the chat for this to work and must have the 'can_pin_messages' administrator right in a supergroup or 'can_edit_messages' administrator right in a channel. Returns True on success.
+     * Use this method to clear the list of pinned messages in a chat. In private chats and channel direct messages chats, no additional rights are required to unpin all pinned messages. Conversely, the bot must be an administrator with the 'can_pin_messages' right or the 'can_edit_messages' right to unpin all pinned messages in groups and channels respectively. Returns True on success.
      *
      * @param chat_id Unique identifier for the target chat or username of the target channel (in the format @channelusername)
      * @param signal Optional `AbortSignal` to cancel the request
@@ -11520,7 +12897,7 @@ class Api {
     /**
      * Use this method for your bot to leave a group, supergroup or channel. Returns True on success.
      *
-     * @param chat_id Unique identifier for the target chat or username of the target supergroup or channel (in the format @channelusername)
+     * @param chat_id Unique identifier for the target chat or username of the target supergroup or channel (in the format @channelusername). Channel direct messages chats aren't supported; leave the corresponding channel instead.
      * @param signal Optional `AbortSignal` to cancel the request
      *
      * **Official reference:** https://core.telegram.org/bots/api#leavechat
@@ -11611,7 +12988,7 @@ class Api {
         return this.raw.getForumTopicIconStickers(signal);
     }
     /**
-     * Use this method to create a topic in a forum supergroup chat. The bot must be an administrator in the chat for this to work and must have the can_manage_topics administrator rights. Returns information about the created topic as a ForumTopic object.
+     * Use this method to create a topic in a forum supergroup chat or a private chat with a user. In the case of a supergroup chat the bot must be an administrator in the chat for this to work and must have the can_manage_topics administrator right. Returns information about the created topic as a ForumTopic object.
      *
      * @param chat_id Unique identifier for the target chat or username of the target supergroup (in the format @supergroupusername)
      * @param name Topic name, 1-128 characters
@@ -11624,7 +13001,7 @@ class Api {
         return this.raw.createForumTopic({ chat_id, name, ...other }, signal);
     }
     /**
-     * Use this method to edit name and icon of a topic in a forum supergroup chat. The bot must be an administrator in the chat for this to work and must have can_manage_topics administrator rights, unless it is the creator of the topic. Returns True on success.
+     * Use this method to edit name and icon of a topic in a forum supergroup chat or a private chat with a user. In the case of a supergroup chat the bot must be an administrator in the chat for this to work and must have the can_manage_topics administrator rights, unless it is the creator of the topic. Returns True on success.
      *
      * @param chat_id Unique identifier for the target chat or username of the target supergroup (in the format @supergroupusername)
      * @param message_thread_id Unique identifier for the target message thread of the forum topic
@@ -11661,7 +13038,7 @@ class Api {
         return this.raw.reopenForumTopic({ chat_id, message_thread_id }, signal);
     }
     /**
-     * Use this method to delete a forum topic along with all its messages in a forum supergroup chat. The bot must be an administrator in the chat for this to work and must have the can_delete_messages administrator rights. Returns True on success.
+     * Use this method to delete a forum topic along with all its messages in a forum supergroup chat or a private chat with a user. In the case of a supergroup chat the bot must be an administrator in the chat for this to work and must have the can_delete_messages administrator rights. Returns True on success.
      *
      * @param chat_id Unique identifier for the target chat or username of the target supergroup (in the format @supergroupusername)
      * @param message_thread_id Unique identifier for the target message thread of the forum topic
@@ -11673,7 +13050,7 @@ class Api {
         return this.raw.deleteForumTopic({ chat_id, message_thread_id }, signal);
     }
     /**
-     * Use this method to clear the list of pinned messages in a forum topic. The bot must be an administrator in the chat for this to work and must have the can_pin_messages administrator right in the supergroup. Returns True on success.
+     * Use this method to clear the list of pinned messages in a forum topic in a forum supergroup chat or a private chat with a user. In the case of a supergroup chat the bot must be an administrator in the chat for this to work and must have the can_pin_messages administrator right in the supergroup. Returns True on success.
      *
      * @param chat_id Unique identifier for the target chat or username of the target supergroup (in the format @supergroupusername)
      * @param message_thread_id Unique identifier for the target message thread of the forum topic
@@ -11685,7 +13062,7 @@ class Api {
         return this.raw.unpinAllForumTopicMessages({ chat_id, message_thread_id }, signal);
     }
     /**
-     * Use this method to edit the name of the 'General' topic in a forum supergroup chat. The bot must be an administrator in the chat for this to work and must have can_manage_topics administrator rights. Returns True on success.
+     * Use this method to edit the name of the 'General' topic in a forum supergroup chat. The bot must be an administrator in the chat for this to work and must have the can_manage_topics administrator rights. Returns True on success.
      *
      * @param chat_id Unique identifier for the target chat or username of the target supergroup (in the format @supergroupusername)
      * @param name New topic name, 1-128 characters
@@ -11826,7 +13203,7 @@ class Api {
      * Use this method to change the bot's description, which is shown in the chat with the bot if the chat is empty. Returns True on success.
      *
      * @param description New bot description; 0-512 characters. Pass an empty string to remove the dedicated description for the given language.
-     * @param other Optional remaining paramters, confer the official reference below
+     * @param other Optional remaining parameters, confer the official reference below
      * @param signal Optional `AbortSignal` to cancel the request
      *
      * **Official reference:** https://core.telegram.org/bots/api#setmydescription
@@ -11837,7 +13214,7 @@ class Api {
     /**
      * Use this method to get the current bot description for the given user language. Returns BotDescription on success.
      *
-     * @param other Optional remaining paramters, confer the official reference below
+     * @param other Optional remaining parameters, confer the official reference below
      * @param signal Optional `AbortSignal` to cancel the request
      *
      * **Official reference:** https://core.telegram.org/bots/api#getmydescription
@@ -11849,7 +13226,7 @@ class Api {
      * Use this method to change the bot's short description, which is shown on the bot's profile page and is sent together with the link when users share the bot. Returns True on success.
      *
      * @param short_description New short description for the bot; 0-120 characters. Pass an empty string to remove the dedicated short description for the given language.
-     * @param other Optional remaining paramters, confer the official reference below
+     * @param other Optional remaining parameters, confer the official reference below
      * @param signal Optional `AbortSignal` to cancel the request
      *
      * **Official reference:** https://core.telegram.org/bots/api#setmyshortdescription
@@ -11860,13 +13237,34 @@ class Api {
     /**
      * Use this method to get the current bot short description for the given user language. Returns BotShortDescription on success.
      *
-     * @param other Optional remaining paramters, confer the official reference below
+     * @param other Optional remaining parameters, confer the official reference below
      * @param signal Optional `AbortSignal` to cancel the request
      *
      * **Official reference:** https://core.telegram.org/bots/api#getmyshortdescription
      */
     getMyShortDescription(other, signal) {
         return this.raw.getMyShortDescription({ ...other }, signal);
+    }
+    /**
+     * Changes the profile photo of the bot. Returns True on success.
+     *
+     * @param photo The new profile photo to set
+     * @param signal Optional `AbortSignal` to cancel the request
+     *
+     * **Official reference:** https://core.telegram.org/bots/api#setmyprofilephoto
+     */
+    setMyProfilePhoto(photo, signal) {
+        return this.raw.setMyProfilePhoto({ photo }, signal);
+    }
+    /**
+     * Removes the profile photo of the bot. Requires no parameters. Returns True on success.
+     *
+     * @param signal Optional `AbortSignal` to cancel the request
+     *
+     * **Official reference:** https://core.telegram.org/bots/api#removemyprofilephoto
+     */
+    removeMyProfilePhoto(signal) {
+        return this.raw.removeMyProfilePhoto(signal);
     }
     /**
      * Use this method to change the bot's menu button in a private chat, or the default menu button. Returns True on success.
@@ -11913,7 +13311,17 @@ class Api {
         return this.raw.getMyDefaultAdministratorRights({ ...other }, signal);
     }
     /**
-     * Use this method to edit text and game messages. On success, if the edited message is not an inline message, the edited Message is returned, otherwise True is returned.
+     * A method to get the current Telegram Stars balance of the bot. Requires no parameters. On success, returns a StarAmount object.
+     *
+     * @param signal Optional `AbortSignal` to cancel the request
+     *
+     * **Official reference:** https://core.telegram.org/bots/api#getmystarbalance
+     */
+    getMyStarBalance(signal) {
+        return this.raw.getMyStarBalance(signal);
+    }
+    /**
+     * Use this method to edit text and game messages. On success, if the edited message is not an inline message, the edited Message is returned, otherwise True is returned. Note that business messages that were not sent by the bot and do not contain an inline keyboard can only be edited within 48 hours from the time they were sent.
      *
      * @param chat_id Unique identifier for the target chat or username of the target channel (in the format @channelusername)
      * @param message_id Identifier of the message to edit
@@ -11927,7 +13335,7 @@ class Api {
         return this.raw.editMessageText({ chat_id, message_id, text, ...other }, signal);
     }
     /**
-     * Use this method to edit text and game inline messages. On success, if the edited message is not an inline message, the edited Message is returned, otherwise True is returned.
+     * Use this method to edit text and game inline messages. On success, if the edited message is not an inline message, the edited Message is returned, otherwise True is returned. Note that business messages that were not sent by the bot and do not contain an inline keyboard can only be edited within 48 hours from the time they were sent.
      *
      * @param inline_message_id Identifier of the inline message
      * @param other Optional remaining parameters, confer the official reference below
@@ -11939,7 +13347,7 @@ class Api {
         return this.raw.editMessageText({ inline_message_id, text, ...other }, signal);
     }
     /**
-     * Use this method to edit captions of messages. On success, if the edited message is not an inline message, the edited Message is returned, otherwise True is returned.
+     * Use this method to edit captions of messages. On success, if the edited message is not an inline message, the edited Message is returned, otherwise True is returned. Note that business messages that were not sent by the bot and do not contain an inline keyboard can only be edited within 48 hours from the time they were sent.
      *
      * @param chat_id Unique identifier for the target chat or username of the target channel (in the format @channelusername)
      * @param message_id Identifier of the message to edit
@@ -11952,7 +13360,7 @@ class Api {
         return this.raw.editMessageCaption({ chat_id, message_id, ...other }, signal);
     }
     /**
-     * Use this method to edit captions of inline messages. On success, if the edited message is not an inline message, the edited Message is returned, otherwise True is returned.
+     * Use this method to edit captions of inline messages. On success, if the edited message is not an inline message, the edited Message is returned, otherwise True is returned. Note that business messages that were not sent by the bot and do not contain an inline keyboard can only be edited within 48 hours from the time they were sent.
      *
      * @param inline_message_id Identifier of the inline message
      * @param other Optional remaining parameters, confer the official reference below
@@ -11964,7 +13372,7 @@ class Api {
         return this.raw.editMessageCaption({ inline_message_id, ...other }, signal);
     }
     /**
-     * Use this method to edit animation, audio, document, photo, or video messages. If a message is part of a message album, then it can be edited only to an audio for audio albums, only to a document for document albums and to a photo or a video otherwise. When an inline message is edited, a new file can't be uploaded; use a previously uploaded file via its file_id or specify a URL. On success, if the edited message is not an inline message, the edited Message is returned, otherwise True is returned.
+     * Use this method to edit animation, audio, document, photo, or video messages, or to add media to text messages. If a message is part of a message album, then it can be edited only to an audio for audio albums, only to a document for document albums and to a photo or a video otherwise. When an inline message is edited, a new file can't be uploaded; use a previously uploaded file via its file_id or specify a URL. On success, if the edited message is not an inline message, the edited Message is returned, otherwise True is returned. Note that business messages that were not sent by the bot and do not contain an inline keyboard can only be edited within 48 hours from the time they were sent.
      *
      * @param chat_id Unique identifier for the target chat or username of the target channel (in the format @channelusername)
      * @param message_id Identifier of the message to edit
@@ -11978,7 +13386,7 @@ class Api {
         return this.raw.editMessageMedia({ chat_id, message_id, media, ...other }, signal);
     }
     /**
-     * Use this method to edit animation, audio, document, photo, or video messages. If a message is part of a message album, then it can be edited only to an audio for audio albums, only to a document for document albums and to a photo or a video otherwise. When an inline message is edited, a new file can't be uploaded; use a previously uploaded file via its file_id or specify a URL. On success, if the edited message is not an inline message, the edited Message is returned, otherwise True is returned.
+     * Use this method to edit animation, audio, document, photo, or video inline messages, or to add media to text inline messages. If a message is part of a message album, then it can be edited only to an audio for audio albums, only to a document for document albums and to a photo or a video otherwise. When an inline message is edited, a new file can't be uploaded; use a previously uploaded file via its file_id or specify a URL. On success, if the edited message is not an inline message, the edited Message is returned, otherwise True is returned. Note that business messages that were not sent by the bot and do not contain an inline keyboard can only be edited within 48 hours from the time they were sent.
      *
      * @param inline_message_id Identifier of the inline message
      * @param media An object for a new media content of the message
@@ -11991,7 +13399,7 @@ class Api {
         return this.raw.editMessageMedia({ inline_message_id, media, ...other }, signal);
     }
     /**
-     * Use this method to edit only the reply markup of messages. On success, if the edited message is not an inline message, the edited Message is returned, otherwise True is returned.
+     * Use this method to edit only the reply markup of messages. On success, if the edited message is not an inline message, the edited Message is returned, otherwise True is returned. Note that business messages that were not sent by the bot and do not contain an inline keyboard can only be edited within 48 hours from the time they were sent.
      *
      * @param chat_id Unique identifier for the target chat or username of the target channel (in the format @channelusername)
      * @param message_id Identifier of the message to edit
@@ -12004,7 +13412,7 @@ class Api {
         return this.raw.editMessageReplyMarkup({ chat_id, message_id, ...other }, signal);
     }
     /**
-     * Use this method to edit only the reply markup of inline messages. On success, if the edited message is not an inline message, the edited Message is returned, otherwise True is returned.
+     * Use this method to edit only the reply markup of inline messages. On success, if the edited message is not an inline message, the edited Message is returned, otherwise True is returned. Note that business messages that were not sent by the bot and do not contain an inline keyboard can only be edited within 48 hours from the time they were sent.
      *
      * @param inline_message_id Identifier of the inline message
      * @param other Optional remaining parameters, confer the official reference below
@@ -12036,7 +13444,8 @@ class Api {
      * - Bots can delete incoming messages in private chats.
      * - Bots granted can_post_messages permissions can delete outgoing messages in channels.
      * - If the bot is an administrator of a group, it can delete any message there.
-     * - If the bot has can_delete_messages permission in a supergroup or a channel, it can delete any message there.
+     * - If the bot has can_delete_messages administrator right in a supergroup or a channel, it can delete any message there.
+     * - If the bot has can_manage_direct_messages administrator right in a channel, it can delete any message in the corresponding direct messages chat.
      * Returns True on success.
      *
      * @param chat_id Unique identifier for the target chat or username of the target channel (in the format @channelusername)
@@ -12059,6 +13468,233 @@ class Api {
      */
     deleteMessages(chat_id, message_ids, signal) {
         return this.raw.deleteMessages({ chat_id, message_ids }, signal);
+    }
+    /**
+     * Delete messages on behalf of a business account. Requires the can_delete_outgoing_messages business bot right to delete messages sent by the bot itself, or the can_delete_all_messages business bot right to delete any message. Returns True on success.
+     *
+     *     @param business_connection_id Unique identifier of the business connection on behalf of which to delete the messages
+     *     @param message_ids A list of 1-100 identifiers of messages to delete. All messages must be from the same chat. See deleteMessage for limitations on which messages can be deleted
+     * @param signal Optional `AbortSignal` to cancel the request
+     *
+     * **Official reference:** https://core.telegram.org/bots/api#deletebusinessmessages
+     */
+    deleteBusinessMessages(business_connection_id, message_ids, signal) {
+        return this.raw.deleteBusinessMessages({ business_connection_id, message_ids }, signal);
+    }
+    /**
+     * Changes the first and last name of a managed business account. Requires the can_change_name business bot right. Returns True on success.
+     *
+     * @param business_connection_id Unique identifier of the business connection
+     * @param first_name The new value of the first name for the business account; 1-64 characters
+     * @param other Optional remaining parameters, confer the official reference below
+     * @param signal Optional `AbortSignal` to cancel the request
+     *
+     * **Official reference:** https://core.telegram.org/bots/api#setbusinessaccountname
+     */
+    setBusinessAccountName(business_connection_id, first_name, other, signal) {
+        return this.raw.setBusinessAccountName({ business_connection_id, first_name, ...other }, signal);
+    }
+    /**
+     * Changes the username of a managed business account. Requires the can_change_username business bot right. Returns True on success.
+     *
+     * @param business_connection_id Unique identifier of the business connection *
+     * @param username The new value of the username for the business account; 0-32 characters
+     * @param signal Optional `AbortSignal` to cancel the request
+     *
+     * **Official reference:** https://core.telegram.org/bots/api#setbusinessaccountusername
+     */
+    setBusinessAccountUsername(business_connection_id, username, signal) {
+        return this.raw.setBusinessAccountUsername({ business_connection_id, username }, signal);
+    }
+    /**
+     * Changes the bio of a managed business account. Requires the can_change_bio business bot right. Returns True on success.
+     *
+     * @param business_connection_id Unique identifier of the business connection
+     * @param bio The new value of the bio for the business account; 0-140 characters
+     * @param signal Optional `AbortSignal` to cancel the request
+     *
+     * **Official reference:** https://core.telegram.org/bots/api#setbusinessaccountbio
+     */
+    setBusinessAccountBio(business_connection_id, bio, signal) {
+        return this.raw.setBusinessAccountBio({ business_connection_id, bio }, signal);
+    }
+    /**
+     * Changes the profile photo of a managed business account. Requires the can_edit_profile_photo business bot right. Returns True on success.
+     *
+     * @param business_connection_id Unique identifier of the business connection
+     * @param photo The new profile photo to set
+     * @param other Optional remaining parameters, confer the official reference below
+     * @param signal Optional `AbortSignal` to cancel the request
+     *
+     * **Official reference:** https://core.telegram.org/bots/api#setbusinessaccountprofilephoto
+     */
+    setBusinessAccountProfilePhoto(business_connection_id, photo, other, signal) {
+        return this.raw.setBusinessAccountProfilePhoto({ business_connection_id, photo, ...other }, signal);
+    }
+    /**
+     * Removes the current profile photo of a managed business account. Requires the can_edit_profile_photo business bot right. Returns True on success.
+     *
+     * @param business_connection_id Unique identifier of the business connection
+     * @param other Optional remaining parameters, confer the official reference below
+     * @param signal Optional `AbortSignal` to cancel the request
+     *
+     * **Official reference:** https://core.telegram.org/bots/api#removebusinessaccountprofilephoto
+     */
+    removeBusinessAccountProfilePhoto(business_connection_id, other, signal) {
+        return this.raw.removeBusinessAccountProfilePhoto({ business_connection_id, ...other }, signal);
+    }
+    /**
+     * Changes the privacy settings pertaining to incoming gifts in a managed business account. Requires the can_change_gift_settings business bot right. Returns True on success.
+     *
+     * @param business_connection_id Unique identifier of the business connection
+     * @param show_gift_button Pass True, if a button for sending a gift to the user or by the business account must always be shown in the input field
+     * @param accepted_gift_types Types of gifts accepted by the business account
+     * @param signal Optional `AbortSignal` to cancel the request
+     *
+     * **Official reference:** https://core.telegram.org/bots/api#setbusinessaccountgiftsettings
+     */
+    setBusinessAccountGiftSettings(business_connection_id, show_gift_button, accepted_gift_types, signal) {
+        return this.raw.setBusinessAccountGiftSettings({ business_connection_id, show_gift_button, accepted_gift_types }, signal);
+    }
+    /**
+     * Returns the amount of Telegram Stars owned by a managed business account. Requires the can_view_gifts_and_stars business bot right. Returns StarAmount on success.
+     *
+     * @param business_connection_id Unique identifier of the business connection
+     * @param signal Optional `AbortSignal` to cancel the request
+     *
+     * **Official reference:** https://core.telegram.org/bots/api#getbusinessaccountstarbalance
+     */
+    getBusinessAccountStarBalance(business_connection_id, signal) {
+        return this.raw.getBusinessAccountStarBalance({ business_connection_id }, signal);
+    }
+    /**
+     * Transfers Telegram Stars from the business account balance to the bot's balance. Requires the can_transfer_stars business bot right. Returns True on success.
+     *
+     * @param business_connection_id Unique identifier of the business connection
+     * @param star_count Number of Telegram Stars to transfer; 1-10000
+     * @param signal Optional `AbortSignal` to cancel the request
+     *
+     * **Official reference:** https://core.telegram.org/bots/api#transferbusinessaccountstars
+     */
+    transferBusinessAccountStars(business_connection_id, star_count, signal) {
+        return this.raw.transferBusinessAccountStars({ business_connection_id, star_count }, signal);
+    }
+    /**
+     * Returns the gifts received and owned by a managed business account. Requires the can_view_gifts_and_stars business bot right. Returns OwnedGifts on success.
+     *
+     * @param business_connection_id Unique identifier of the business connection
+     * @param other Optional remaining parameters, confer the official reference below
+     * @param signal Optional `AbortSignal` to cancel the request
+     *
+     * **Official reference:** https://core.telegram.org/bots/api#getbusinessaccountgifts
+     */
+    getBusinessAccountGifts(business_connection_id, other, signal) {
+        return this.raw.getBusinessAccountGifts({ business_connection_id, ...other }, signal);
+    }
+    /**
+     * Converts a given regular gift to Telegram Stars. Requires the can_convert_gifts_to_stars business bot right. Returns True on success.
+     *
+     * @param business_connection_id Unique identifier of the business connection
+     * @param owned_gift_id Unique identifier of the regular gift that should be converted to Telegram Stars
+     * @param signal Optional `AbortSignal` to cancel the request
+     *
+     * **Official reference:** https://core.telegram.org/bots/api#convertgifttostars
+     */
+    convertGiftToStars(business_connection_id, owned_gift_id, signal) {
+        return this.raw.convertGiftToStars({ business_connection_id, owned_gift_id }, signal);
+    }
+    /**
+     * Upgrades a given regular gift to a unique gift. Requires the can_transfer_and_upgrade_gifts business bot right. Additionally requires the can_transfer_stars business bot right if the upgrade is paid. Returns True on success.
+     *
+     * @param business_connection_id Unique identifier of the business connection
+     * @param owned_gift_id Unique identifier of the regular gift that should be upgraded to a unique one
+     * @param other Optional remaining parameters, confer the official reference below
+     * @param signal Optional `AbortSignal` to cancel the request
+     *
+     * **Official reference:** https://core.telegram.org/bots/api#upgradegift
+     */
+    upgradeGift(business_connection_id, owned_gift_id, other, signal) {
+        return this.raw.upgradeGift({ business_connection_id, owned_gift_id, ...other }, signal);
+    }
+    /**
+     * Transfers an owned unique gift to another user. Requires the can_transfer_and_upgrade_gifts business bot right. Requires can_transfer_stars business bot right if the transfer is paid. Returns True on success.
+     *
+     * @param business_connection_id Unique identifier of the business connection
+     * @param owned_gift_id Unique identifier of the regular gift that should be transferred
+     * @param new_owner_chat_id Unique identifier of the chat which will own the gift. The chat must be active in the last 24 hours.
+     * @param star_count The amount of Telegram Stars that will be paid for the transfer from the business account balance. If positive, then the can_transfer_stars business bot right is required.
+     * @param signal Optional `AbortSignal` to cancel the request
+     *
+     * **Official reference:** https://core.telegram.org/bots/api#transfergift
+     */
+    transferGift(business_connection_id, owned_gift_id, new_owner_chat_id, star_count, signal) {
+        return this.raw.transferGift({
+            business_connection_id,
+            owned_gift_id,
+            new_owner_chat_id,
+            star_count,
+        }, signal);
+    }
+    /**
+     * Posts a story on behalf of a managed business account. Requires the can_manage_stories business bot right. Returns Story on success.
+     *
+     * @param business_connection_id Unique identifier of the business connection
+     * @param content Content of the story
+     * @param active_period Period after which the story is moved to the archive, in seconds; must be one of 6 * 3600, 12 * 3600, 86400, or 2 * 86400
+     * @param other Optional remaining parameters, confer the official reference below
+     * @param signal Optional `AbortSignal` to cancel the request
+     *
+     * **Official reference:** https://core.telegram.org/bots/api#poststory
+     */
+    postStory(business_connection_id, content, active_period, other, signal) {
+        return this.raw.postStory({ business_connection_id, content, active_period, ...other }, signal);
+    }
+    /**
+     * Reposts a story on behalf of a business account from another business account. Both business accounts must be managed by the same bot, and the story on the source account must have been posted (or reposted) by the bot. Requires the can_manage_stories business bot right for both business accounts. Returns Story on success.
+     *
+     * @param business_connection_id Unique identifier of the business connection
+     * @param from_chat_id Unique identifier of the chat which posted the story that should be reposted
+     * @param from_story_id Unique identifier of the story that should be reposted
+     * @param active_period Period after which the story is moved to the archive, in seconds; must be one of 6 * 3600, 12 * 3600, 86400, or 2 * 86400
+     * @param other Optional remaining parameters, confer the official reference below
+     * @param signal Optional `AbortSignal` to cancel the request
+     *
+     * **Official reference:** https://core.telegram.org/bots/api#repoststory
+     */
+    repostStory(business_connection_id, from_chat_id, from_story_id, active_period, other, signal) {
+        return this.raw.repostStory({
+            business_connection_id,
+            from_chat_id,
+            from_story_id,
+            active_period,
+            ...other,
+        }, signal);
+    }
+    /**
+     * Edits a story previously posted by the bot on behalf of a managed business account. Requires the can_manage_stories business bot right. Returns Story on success.
+     *
+     * @param business_connection_id Unique identifier of the business connection
+     * @param story_id Unique identifier of the story to edit
+     * @param content Content of the story
+     * @param other Optional remaining parameters, confer the official reference below
+     * @param signal Optional `AbortSignal` to cancel the request
+     *
+     * **Official reference:** https://core.telegram.org/bots/api#editstory
+     */
+    editStory(business_connection_id, story_id, content, other, signal) {
+        return this.raw.editStory({ business_connection_id, story_id, content, ...other }, signal);
+    }
+    /**
+     * Deletes a story previously posted by the bot on behalf of a managed business account. Requires the can_manage_stories business bot right. Returns True on success.
+     *
+     * @param business_connection_id Unique identifier of the business connection
+     * @param story_id Unique identifier of the story to delete
+     * @param signal Optional `AbortSignal` to cancel the request
+     *
+     * **Official reference:** https://core.telegram.org/bots/api#deletestory
+     */
+    deleteStory(business_connection_id, story_id, signal) {
+        return this.raw.deleteStory({ business_connection_id, story_id }, signal);
     }
     /**
      * Use this method to send static .WEBP, animated .TGS, or video .WEBM stickers. On success, the sent Message is returned.
@@ -12262,6 +13898,56 @@ class Api {
         }, signal);
     }
     /**
+     * Returns the list of gifts that can be sent by the bot to users and channel chats. Requires no parameters. Returns a Gifts object.
+     *
+     * @param signal Optional `AbortSignal` to cancel the request
+     *
+     * **Official reference:** https://core.telegram.org/bots/api#getavailablegifts
+     */
+    getAvailableGifts(signal) {
+        return this.raw.getAvailableGifts(signal);
+    }
+    /**
+     * Sends a gift to the given user. The gift can't be converted to Telegram Stars by the receiver. Returns True on success.
+     *
+     * @param user_id Unique identifier of the target user who will receive the gift
+     * @param gift_id Identifier of the gift
+     * @param other Optional remaining parameters, confer the official reference below
+     * @param signal Optional `AbortSignal` to cancel the request
+     *
+     * **Official reference:** https://core.telegram.org/bots/api#sendgift
+     */
+    sendGift(user_id, gift_id, other, signal) {
+        return this.raw.sendGift({ user_id, gift_id, ...other }, signal);
+    }
+    /**
+     * Gifts a Telegram Premium subscription to the given user. Returns True on success.
+     *
+     * @param user_id Unique identifier of the target user who will receive a Telegram Premium subscription
+     * @param month_count Number of months the Telegram Premium subscription will be active for the user; must be one of 3, 6, or 12
+     * @param star_count Number of Telegram Stars to pay for the Telegram Premium subscription; must be 1000 for 3 months, 1500 for 6 months, and 2500 for 12 months
+     * @param other Optional remaining parameters, confer the official reference below
+     * @param signal Optional `AbortSignal` to cancel the request
+     *
+     * **Official reference:** https://core.telegram.org/bots/api#giftpremiumsubscription
+     */
+    giftPremiumSubscription(user_id, month_count, star_count, other, signal) {
+        return this.raw.giftPremiumSubscription({ user_id, month_count, star_count, ...other }, signal);
+    }
+    /**
+     * Sends a gift to the given channel chat. The gift can't be converted to Telegram Stars by the receiver. Returns True on success.
+     *
+     * @param chat_id Unique identifier for the chat or username of the channel (in the format @channelusername) that will receive the gift
+     * @param gift_id Identifier of the gift
+     * @param other Optional remaining parameters, confer the official reference below
+     * @param signal Optional `AbortSignal` to cancel the request
+     *
+     * **Official reference:** https://core.telegram.org/bots/api#sendgift
+     */
+    sendGiftToChannel(chat_id, gift_id, other, signal) {
+        return this.raw.sendGift({ chat_id, gift_id, ...other }, signal);
+    }
+    /**
      * Use this method to send answers to an inline query. On success, True is returned.
      * No more than 50 results per query are allowed.
      *
@@ -12288,6 +13974,19 @@ class Api {
      */
     answerWebAppQuery(web_app_query_id, result, signal) {
         return this.raw.answerWebAppQuery({ web_app_query_id, result }, signal);
+    }
+    /**
+     * Stores a message that can be sent by a user of a Mini App. Returns a PreparedInlineMessage object.
+     *
+     * @param user_id Unique identifier of the target user that can use the prepared message
+     * @param result An object describing the message to be sent
+     * @param other Optional remaining parameters, confer the official reference below
+     * @param signal Optional `AbortSignal` to cancel the request
+     *
+     * **Official reference:** https://core.telegram.org/bots/api#savepreparedinlinemessage
+     */
+    savePreparedInlineMessage(user_id, result, other, signal) {
+        return this.raw.savePreparedInlineMessage({ user_id, result, ...other }, signal);
     }
     /**
      * Use this method to send invoices. On success, the sent Message is returned.
@@ -12366,6 +14065,17 @@ class Api {
         return this.raw.answerPreCheckoutQuery({ pre_checkout_query_id, ok, ...other }, signal);
     }
     /**
+     * Returns the bot's Telegram Star transactions in chronological order. On success, returns a StarTransactions object.
+     *
+     * @param other Optional remaining parameters, confer the official reference below
+     * @param signal Optional `AbortSignal` to cancel the request
+     *
+     * **Official reference:** https://core.telegram.org/bots/api#getstartransactions
+     */
+    getStarTransactions(other, signal) {
+        return this.raw.getStarTransactions({ ...other }, signal);
+    }
+    /**
      * Refunds a successful payment in Telegram Stars.
      *
      * @param user_id Identifier of the user whose payment will be refunded
@@ -12376,6 +14086,78 @@ class Api {
      */
     refundStarPayment(user_id, telegram_payment_charge_id, signal) {
         return this.raw.refundStarPayment({ user_id, telegram_payment_charge_id }, signal);
+    }
+    /**
+     * Allows the bot to cancel or re-enable extension of a subscription paid in Telegram Stars. Returns True on success.
+     *
+     * @param user_id Identifier of the user whose subscription will be edited
+     * @param telegram_payment_charge_id Telegram payment identifier for the subscription
+     * @param is_canceled Pass True to cancel extension of the user subscription; the subscription must be active up to the end of the current subscription period. Pass False to allow the user to re-enable a subscription that was previously canceled by the bot.
+     * @param signal Optional `AbortSignal` to cancel the request
+     *
+     * **Official reference:** https://core.telegram.org/bots/api#edituserstarsubscription
+     */
+    editUserStarSubscription(user_id, telegram_payment_charge_id, is_canceled, signal) {
+        return this.raw.editUserStarSubscription({ user_id, telegram_payment_charge_id, is_canceled }, signal);
+    }
+    /**
+     * Verifies a user on behalf of the organization which is represented by the bot. Returns True on success.
+     *
+     * @param user_id Unique identifier of the target user
+     * @param other Optional remaining parameters, confer the official reference below
+     * @param signal Optional `AbortSignal` to cancel the request
+     *
+     * **Official reference:** https://core.telegram.org/bots/api#verifyuser
+     */
+    verifyUser(user_id, other, signal) {
+        return this.raw.verifyUser({ user_id, ...other }, signal);
+    }
+    /**
+     * Verifies a chat on behalf of the organization which is represented by the bot. Returns True on success.
+     *
+     * @param chat_id Unique identifier for the target chat or username of the target channel (in the format @channelusername). Channel direct messages chats can't be verified.
+     * @param other Optional remaining parameters, confer the official reference below
+     * @param signal Optional `AbortSignal` to cancel the request
+     *
+     * **Official reference:** https://core.telegram.org/bots/api#verifychat
+     */
+    verifyChat(chat_id, other, signal) {
+        return this.raw.verifyChat({ chat_id, ...other }, signal);
+    }
+    /**
+     * Removes verification from a user who is currently verified on behalf of the organization represented by the bot. Returns True on success.
+     *
+     * @param user_id Unique identifier of the target user
+     * @param signal Optional `AbortSignal` to cancel the request
+     *
+     * **Official reference:** https://core.telegram.org/bots/api#removeuserverification
+     */
+    removeUserVerification(user_id, signal) {
+        return this.raw.removeUserVerification({ user_id }, signal);
+    }
+    /**
+     * Removes verification from a chat that is currently verified on behalf of the organization represented by the bot. Returns True on success.
+     *
+     * @param chat_id Unique identifier for the target chat or username of the target channel (in the format @channelusername)
+     * @param signal Optional `AbortSignal` to cancel the request
+     *
+     * **Official reference:** https://core.telegram.org/bots/api#removechatverification
+     */
+    removeChatVerification(chat_id, signal) {
+        return this.raw.removeChatVerification({ chat_id }, signal);
+    }
+    /**
+     * Marks incoming message as read on behalf of a business account. Requires the can_read_messages business bot right. Returns True on success.
+     *
+     * @param business_connection_id Unique identifier of the business connection on behalf of which to read the message
+     * @param chat_id Unique identifier of the chat in which the message was received. The chat must have been active in the last 24 hours.
+     * @param message_id Unique identifier of the message to mark as read
+     * @param signal Optional `AbortSignal` to cancel the request
+     *
+     * **Official reference:** https://core.telegram.org/bots/api#readbusinessmessage
+     */
+    readBusinessMessage(business_connection_id, chat_id, message_id, signal) {
+        return this.raw.readBusinessMessage({ business_connection_id, chat_id, message_id }, signal);
     }
     /**
      * Informs a user that some of the Telegram Passport elements they provided contains errors. The user will not be able to re-submit their Passport to you until the errors are fixed (the contents of the field for which you returned the error must change). Returns True on success.
@@ -12394,7 +14176,7 @@ class Api {
     /**
      * Use this method to send a game. On success, the sent Message is returned.
      *
-     * @param chat_id Unique identifier for the target chat
+     * @param chat_id Unique identifier for the target chat. Games can't be sent to channel direct messages chats and channel chats.
      * @param game_short_name Short name of the game, serves as the unique identifier for the game. Set up your games via BotFather.
      * @param other Optional remaining parameters, confer the official reference below
      * @param signal Optional `AbortSignal` to cancel the request
@@ -12474,7 +14256,7 @@ exports.Api = Api;
 "use strict";
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.createRawApi = void 0;
+exports.createRawApi = createRawApi;
 const platform_node_js_1 = __nccwpck_require__(7876);
 const error_js_1 = __nccwpck_require__(2706);
 const payload_js_1 = __nccwpck_require__(4351);
@@ -12519,14 +14301,17 @@ class ApiClient {
                 : (0, payload_js_1.createJsonPayload)(payload);
             const sig = controller.signal;
             const options = { ...opts.baseFetchConfig, signal: sig, ...config };
-            // Perform fetch call, and handle networking errors
-            const successPromise = (0, shim_node_js_1.fetch)(url instanceof URL ? url.href : url, options).catch((0, error_js_1.toHttpError)(method, opts.sensitiveLogs));
+            // Perform fetch call
+            const successPromise = this.fetch(url, options)
+                .then((res) => res.json());
             // Those are the three possible outcomes of the fetch call:
             const operations = [successPromise, streamErr.promise, timeout.promise];
             // Wait for result
             try {
-                const res = await Promise.race(operations);
-                return await res.json();
+                return await Promise.race(operations);
+            }
+            catch (error) {
+                throw (0, error_js_1.toHttpError)(method, opts.sensitiveLogs, error);
             }
             finally {
                 if (timeout.handle !== undefined)
@@ -12535,6 +14320,11 @@ class ApiClient {
         };
         const apiRoot = (_a = options.apiRoot) !== null && _a !== void 0 ? _a : "https://api.telegram.org";
         const environment = (_b = options.environment) !== null && _b !== void 0 ? _b : "prod";
+        // In an ideal world, `fetch` is independent of the context being called,
+        // but in a Cloudflare worker, any context other than global throws an error.
+        // That is why we need to call custom fetch or fetch without context.
+        const { fetch: customFetch } = options;
+        const fetchFn = customFetch !== null && customFetch !== void 0 ? customFetch : shim_node_js_1.fetch;
         this.options = {
             apiRoot,
             environment,
@@ -12546,7 +14336,9 @@ class ApiClient {
             },
             canUseWebhookReply: (_e = options.canUseWebhookReply) !== null && _e !== void 0 ? _e : (() => false),
             sensitiveLogs: (_f = options.sensitiveLogs) !== null && _f !== void 0 ? _f : false,
+            fetch: ((...args) => fetchFn(...args)),
         };
+        this.fetch = this.options.fetch;
         if (this.options.apiRoot.endsWith("/")) {
             throw new Error(`Remove the trailing '/' from the 'apiRoot' option (use '${this.options.apiRoot.substring(0, this.options.apiRoot.length - 1)}' instead of '${this.options.apiRoot}')`);
         }
@@ -12583,7 +14375,18 @@ function createRawApi(token, options, webhookReplyEnvelope) {
         get(_, m) {
             return m === "toJSON"
                 ? "__internal"
-                : client.callApi.bind(client, m);
+                // Methods with zero parameters are called without any payload,
+                // so we have to manually inject an empty payload.
+                : m === "getMe" ||
+                    m === "getWebhookInfo" ||
+                    m === "getForumTopicIconStickers" ||
+                    m === "getAvailableGifts" ||
+                    m === "logOut" ||
+                    m === "close" ||
+                    m === "getMyStarBalance" ||
+                    m === "removeMyProfilePhoto"
+                    ? client.callApi.bind(client, m, {})
+                    : client.callApi.bind(client, m);
         },
         ...proxyMethods,
     };
@@ -12599,7 +14402,6 @@ function createRawApi(token, options, webhookReplyEnvelope) {
     };
     return api;
 }
-exports.createRawApi = createRawApi;
 const defaultBuildUrl = (root, token, method, env) => {
     const prefix = env === "test" ? "test/" : "";
     return `${root}/bot${token}/${prefix}${method}`;
@@ -12693,7 +14495,9 @@ const shim_node_js_1 = __nccwpck_require__(9739);
 "use strict";
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.toHttpError = exports.HttpError = exports.toGrammyError = exports.GrammyError = void 0;
+exports.HttpError = exports.GrammyError = void 0;
+exports.toGrammyError = toGrammyError;
+exports.toHttpError = toHttpError;
 const platform_node_js_1 = __nccwpck_require__(7876);
 const debug = (0, platform_node_js_1.debug)("grammy:warn");
 /**
@@ -12737,7 +14541,6 @@ function toGrammyError(err, method, payload) {
     }
     return new GrammyError(`Call to '${method}' failed!`, err, method, payload);
 }
-exports.toGrammyError = toGrammyError;
 /**
  * This class represents errors that are thrown by grammY because an HTTP call
  * to the Telegram Bot API failed.
@@ -12747,7 +14550,7 @@ exports.toGrammyError = toGrammyError;
  * request failed.
  *
  * If an [API transformer
- * function](https://grammy.dev/advanced/transformers.html) throws an error,
+ * function](https://grammy.dev/advanced/transformers) throws an error,
  * grammY will regard this as if the network request failed. The contained error
  * will then be the error that was thrown by the transformer function.
  */
@@ -12762,22 +14565,17 @@ class HttpError extends Error {
 }
 exports.HttpError = HttpError;
 function isTelegramError(err) {
-    return (typeof err === "object" &&
-        err !== null &&
-        "status" in err &&
-        "statusText" in err);
+    return (typeof err === "object" && err !== null &&
+        "status" in err && "statusText" in err);
 }
-function toHttpError(method, sensitiveLogs) {
-    return (err) => {
-        let msg = `Network request for '${method}' failed!`;
-        if (isTelegramError(err))
-            msg += ` (${err.status}: ${err.statusText})`;
-        if (sensitiveLogs && err instanceof Error)
-            msg += ` ${err.message}`;
-        throw new HttpError(msg, err);
-    };
+function toHttpError(method, sensitiveLogs, err) {
+    let msg = `Network request for '${method}' failed!`;
+    if (isTelegramError(err))
+        msg += ` (${err.status}: ${err.statusText})`;
+    if (sensitiveLogs && err instanceof Error)
+        msg += ` ${err.message}`;
+    return new HttpError(msg, err);
 }
-exports.toHttpError = toHttpError;
 
 
 /***/ }),
@@ -12788,7 +14586,9 @@ exports.toHttpError = toHttpError;
 "use strict";
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.createFormDataPayload = exports.createJsonPayload = exports.requiresFormDataUpload = void 0;
+exports.requiresFormDataUpload = requiresFormDataUpload;
+exports.createJsonPayload = createJsonPayload;
+exports.createFormDataPayload = createFormDataPayload;
 const platform_node_js_1 = __nccwpck_require__(7876);
 const types_js_1 = __nccwpck_require__(4846);
 // === Payload types (JSON vs. form data)
@@ -12806,7 +14606,6 @@ function requiresFormDataUpload(payload) {
             ? v.some(requiresFormDataUpload)
             : v instanceof types_js_1.InputFile || requiresFormDataUpload(v)));
 }
-exports.requiresFormDataUpload = requiresFormDataUpload;
 /**
  * Calls `JSON.stringify` but removes `null` values from objects before
  * serialization
@@ -12834,7 +14633,6 @@ function createJsonPayload(payload) {
         body: str(payload),
     };
 }
-exports.createJsonPayload = createJsonPayload;
 async function* protectItr(itr, onError) {
     try {
         yield* itr;
@@ -12865,7 +14663,6 @@ function createFormDataPayload(payload, onError) {
         body: stream,
     };
 }
-exports.createFormDataPayload = createFormDataPayload;
 // === Form data creation
 function createBoundary() {
     // Taken from Deno std lib
@@ -12886,7 +14683,7 @@ const enc = new TextEncoder();
  * @param boundary the boundary string to use between the parts
  */
 async function* payloadToMultipartItr(payload, boundary) {
-    const files = extractFiles(payload);
+    const files = collectFiles(payload);
     // Start multipart/form-data protocol
     yield enc.encode(`--${boundary}\r\n`);
     // Send all payload fields
@@ -12897,7 +14694,11 @@ async function* payloadToMultipartItr(payload, boundary) {
             continue;
         if (!first)
             yield separator;
-        yield valuePart(key, typeof value === "object" ? str(value) : value);
+        yield valuePart(key, value instanceof types_js_1.InputFile
+            ? value.toJSON()
+            : typeof value === "object"
+                ? str(value)
+                : value);
         first = false;
     }
     // Send all files
@@ -12911,28 +14712,27 @@ async function* payloadToMultipartItr(payload, boundary) {
     yield enc.encode(`\r\n--${boundary}--\r\n`);
 }
 /**
- * Replaces all instances of `InputFile` in a given payload by attach://
- * strings. This alters the passed object. After calling this method, the
- * payload object can be stringified.
+ * Installs a `toJSON` implementation on each instance of `InputFile` contained
+ * in the payload. They return attach:// strings under which the respective
+ * instances should be sent. The modified payload can now be serialized to JSON.
  *
- * Returns a list of `InputFile` instances along with the random identifiers
- * that were used in the corresponding attach:// strings, as well as the origin
- * keys of the original payload object.
+ * Returns the list of discovered `InputFile` instances along with the random
+ * identifiers that were used in the corresponding attach:// strings, as well as
+ * the origin keys of the original payload object.
  *
  * @param value a payload object, or a part of it
- * @param key the origin key of the payload object, if a part of it is passed
- * @returns the cleaned payload object
+ * @returns the discovered `InputFile` instances with identifiers and origins
  */
-function extractFiles(value) {
+function collectFiles(value) {
     if (typeof value !== "object" || value === null)
         return [];
     return Object.entries(value).flatMap(([k, v]) => {
         if (Array.isArray(v))
-            return v.flatMap((p) => extractFiles(p));
+            return v.flatMap((p) => collectFiles(p));
         else if (v instanceof types_js_1.InputFile) {
             const id = randomId();
-            // Overwrite `InputFile` instance with attach:// string
-            Object.assign(value, { [k]: `attach://${id}` });
+            // Serialize `InputFile` instance with attach:// string
+            Object.assign(v, { toJSON: () => `attach://${id}` });
             const origin = k === "media" &&
                 "type" in value && typeof value.type === "string"
                 ? value.type // use `type` for `InputMedia*`
@@ -12940,7 +14740,7 @@ function extractFiles(value) {
             return { id, origin, file: v };
         }
         else
-            return extractFiles(v);
+            return collectFiles(v);
     });
 }
 /** Turns a regular value into a `Uint8Array` */
@@ -12996,7 +14796,9 @@ function getExt(key) {
 "use strict";
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.preprocess = exports.parse = exports.matchFilter = void 0;
+exports.matchFilter = matchFilter;
+exports.parse = parse;
+exports.preprocess = preprocess;
 const filterQueryCache = new Map();
 // === Obtain O(1) filter function from query
 /**
@@ -13015,9 +14817,9 @@ const filterQueryCache = new Map();
  * ```
  *
  * Check out the
- * [documentation](https://doc.deno.land/https://deno.land/x/grammy/mod.ts/~/Composer)
+ * [documentation](https://grammy.dev/ref/core/composer#on)
  * of `bot.on` for examples. In addition, the
- * [website](https://grammy.dev/guide/filter-queries.html) contains more
+ * [website](https://grammy.dev/guide/filter-queries) contains more
  * information about how filter queries work in grammY.
  *
  * @param filter A filter query or an array of filter queries
@@ -13034,13 +14836,11 @@ function matchFilter(filter) {
     })();
     return (ctx) => predicate(ctx);
 }
-exports.matchFilter = matchFilter;
 function parse(filter) {
     return Array.isArray(filter)
         ? filter.map((q) => q.split(":"))
         : [filter.split(":")];
 }
-exports.parse = parse;
 function compile(parsed) {
     const preprocessed = parsed.flatMap((q) => check(q, preprocess(q)));
     const ltree = treeify(preprocessed);
@@ -13094,7 +14894,6 @@ function preprocess(filter) {
     }
     return expanded;
 }
-exports.preprocess = preprocess;
 function check(original, preprocessed) {
     if (preprocessed.length === 0)
         throw new Error("Empty filter query given");
@@ -13238,6 +15037,12 @@ const STICKER_KEYS = {
 const REACTION_KEYS = {
     emoji: {},
     custom_emoji: {},
+    paid: {},
+};
+const GIFT_INFO_KEYS = {
+    can_be_upgraded: {},
+    is_upgrade_separate: {},
+    is_private: {},
 };
 // L2
 const COMMON_MESSAGE_KEYS = {
@@ -13249,6 +15054,7 @@ const COMMON_MESSAGE_KEYS = {
     animation: {},
     audio: {},
     document: {},
+    paid_media: {},
     photo: {},
     sticker: STICKER_KEYS,
     story: {},
@@ -13264,16 +15070,31 @@ const COMMON_MESSAGE_KEYS = {
     entities: ENTITY_KEYS,
     caption_entities: ENTITY_KEYS,
     caption: {},
+    link_preview_options: {
+        url: {},
+        prefer_small_media: {},
+        prefer_large_media: {},
+        show_above_text: {},
+    },
     effect_id: {},
+    paid_star_count: {},
     has_media_spoiler: {},
     new_chat_title: {},
     new_chat_photo: {},
     delete_chat_photo: {},
     message_auto_delete_timer_changed: {},
     pinned_message: {},
-    chat_background_set: {},
     invoice: {},
     proximity_alert_triggered: {},
+    chat_background_set: {},
+    giveaway_created: {},
+    giveaway: { only_new_members: {}, has_public_winners: {} },
+    giveaway_winners: { only_new_members: {}, was_refunded: {} },
+    giveaway_completed: {},
+    gift: GIFT_INFO_KEYS,
+    gift_upgrade_sent: GIFT_INFO_KEYS,
+    unique_gift: { transfer_star_count: {} },
+    paid_message_price_changed: {},
     video_chat_scheduled: {},
     video_chat_started: {},
     video_chat_ended: {},
@@ -13282,7 +15103,9 @@ const COMMON_MESSAGE_KEYS = {
 };
 const MESSAGE_KEYS = {
     ...COMMON_MESSAGE_KEYS,
-    sender_boost_count: {},
+    direct_messages_topic: {},
+    chat_owner_left: { new_owner: {} },
+    chat_owner_changd: {},
     new_chat_members: USER_KEYS,
     left_chat_member: USER_KEYS,
     group_chat_created: {},
@@ -13290,22 +15113,35 @@ const MESSAGE_KEYS = {
     migrate_to_chat_id: {},
     migrate_from_chat_id: {},
     successful_payment: {},
-    boost_added: {},
+    refunded_payment: {},
     users_shared: {},
     chat_shared: {},
     connected_website: {},
     write_access_allowed: {},
     passport_data: {},
-    forum_topic_created: {},
+    boost_added: {},
+    forum_topic_created: { is_name_implicit: {} },
     forum_topic_edited: { name: {}, icon_custom_emoji_id: {} },
     forum_topic_closed: {},
     forum_topic_reopened: {},
     general_forum_topic_hidden: {},
     general_forum_topic_unhidden: {},
+    checklist: { others_can_add_tasks: {}, others_can_mark_tasks_as_done: {} },
+    checklist_tasks_done: {},
+    checklist_tasks_added: {},
+    suggested_post_info: {},
+    suggested_post_approved: {},
+    suggested_post_approval_failed: {},
+    suggested_post_declined: {},
+    suggested_post_paid: {},
+    suggested_post_refunded: {},
+    sender_boost_count: {},
 };
 const CHANNEL_POST_KEYS = {
     ...COMMON_MESSAGE_KEYS,
     channel_chat_created: {},
+    direct_message_price_changed: {},
+    is_paid_post: {},
 };
 const BUSINESS_CONNECTION_KEYS = {
     can_reply: {},
@@ -13344,6 +15180,7 @@ const UPDATE_KEYS = {
     message_reaction_count: MESSAGE_REACTION_COUNT_UPDATED_KEYS,
     chat_boost: {},
     removed_chat_boost: {},
+    purchased_paid_media: {},
 };
 // === Define some helpers for handling shortcuts, e.g. in 'edit:photo'
 const L1_SHORTCUTS = {
@@ -13426,7 +15263,8 @@ Object.defineProperty(exports, "HttpError", ({ enumerable: true, get: function (
 "use strict";
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.defaultAdapter = exports.baseFetchConfig = exports.itrToStream = exports.debug = void 0;
+exports.defaultAdapter = exports.itrToStream = exports.debug = void 0;
+exports.baseFetchConfig = baseFetchConfig;
 // === Needed imports
 const http_1 = __nccwpck_require__(3685);
 const https_1 = __nccwpck_require__(5687);
@@ -13464,7 +15302,6 @@ function baseFetchConfig(apiRoot) {
     else
         return {};
 }
-exports.baseFetchConfig = baseFetchConfig;
 // === Default webhook adapter
 exports.defaultAdapter = "express";
 
@@ -13542,7 +15379,7 @@ __exportStar(__nccwpck_require__(5880), exports);
 // === InputFile handling and File augmenting
 /**
  * An `InputFile` wraps a number of different sources for [sending
- * files](https://grammy.dev/guide/files.html#uploading-your-own-file).
+ * files](https://grammy.dev/guide/files#uploading-your-own-files).
  *
  * It corresponds to the `InputFile` type in the [Telegram Bot API
  * Reference](https://core.telegram.org/bots/api#inputfile).
@@ -13611,6 +15448,9 @@ class InputFile {
         this.consumed = true;
         return data;
     }
+    toJSON() {
+        throw new Error("InputFile instances must be sent via grammY");
+    }
 }
 exports.InputFile = InputFile;
 async function* fetchFile(url) {
@@ -13670,7 +15510,7 @@ var y = d * 365.25;
  * @api public
  */
 
-module.exports = function(val, options) {
+module.exports = function (val, options) {
   options = options || {};
   var type = typeof val;
   if (type === 'string' && val.length > 0) {

@@ -25,7 +25,7 @@
 
 ```yml
 - name: Send message
-  uses: aps-m/telegram-notify-action@v3
+  uses: aps-m/telegram-notify-action@v4
   with:
     token: ${{ secrets.TELEGRAM_TOKEN }}
     to: ${{ secrets.TELEGRAM_CHATID_TO }}
