@@ -70,6 +70,7 @@ function inline(tokens: Token[], heading = false): string {
         break
       case 'softbreak':
       case 'hardbreak':
+        setStyle(desired())
         output += '\n'
         break
       case 'text':

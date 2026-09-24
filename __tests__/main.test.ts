@@ -177,3 +177,65 @@ describe('Markdown conversion selection', () => {
     }
   )
 })
+
+describe('Long CommonMark publication', () => {
+  beforeEach(() => {
+    jest.clearAllMocks()
+    getInputMock = jest.spyOn(core, 'getInput').mockImplementation()
+    setFailedMock = jest.spyOn(core, 'setFailed').mockImplementation()
+    jest.spyOn(core, 'setOutput').mockImplementation()
+    sendMessageMock.mockResolvedValue({ message_id: 100 })
+  })
+
+  it.each(['message', 'message_file'])(
+    'sends all parts from %s in order',
+    async input => {
+      const source = `**${'a'.repeat(5000)}**`
+      getInputMock.mockImplementation(name => {
+        if (name === 'token') return 'bot-token'
+        if (name === 'to') return '123'
+        if (name === 'parse_mode') return 'CommonMark'
+        if (name === input) return input === 'message' ? source : 'changelog.md'
+        return ''
+      })
+      readFileSyncMock.mockReturnValue(source)
+      await main.run()
+      expect(sendMessageMock).toHaveBeenCalledTimes(2)
+      expect(sendMessageMock).toHaveBeenNthCalledWith(
+        1,
+        '123',
+        'a'.repeat(4096),
+        {
+          entities: [{ type: 'bold', offset: 0, length: 4096 }]
+        }
+      )
+      expect(sendMessageMock).toHaveBeenNthCalledWith(
+        2,
+        '123',
+        'a'.repeat(904),
+        {
+          entities: [{ type: 'bold', offset: 0, length: 904 }]
+        }
+      )
+      expect(setFailedMock).not.toHaveBeenCalled()
+      expect(core.setOutput).toHaveBeenCalledWith('message_count', 2)
+    }
+  )
+
+  it('fails visibly after a partial send and records completed IDs', async () => {
+    getInputMock.mockImplementation(name => {
+      if (name === 'token') return 'bot-token'
+      if (name === 'to') return '123'
+      if (name === 'parse_mode') return 'CommonMark'
+      if (name === 'message') return 'x'.repeat(9000)
+      return ''
+    })
+    sendMessageMock
+      .mockResolvedValueOnce({ message_id: 101 })
+      .mockRejectedValueOnce(new Error('rate limited'))
+    await main.run()
+    expect(sendMessageMock).toHaveBeenCalledTimes(2)
+    expect(core.setOutput).toHaveBeenCalledWith('message_ids', '[101]')
+    expect(setFailedMock).toHaveBeenCalledWith('rate limited')
+  })
+})

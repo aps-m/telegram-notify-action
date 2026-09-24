@@ -3,6 +3,7 @@ import * as fs from 'fs'
 import type { ParseMode } from '@grammyjs/types'
 import { Bot, InputFile } from 'grammy'
 import { formatMarkdown } from './markdown'
+import { decodeFormattedMarkdown, splitMessage } from './split'
 
 const supportedParseModes = [
   'HTML',
@@ -34,27 +35,49 @@ export async function run(): Promise<void> {
     const parseMode = getParseMode(core.getInput('parse_mode'))
     const telegramParseMode =
       parseMode === 'CommonMark' ? 'MarkdownV2' : parseMode
-    const format = (text: string): string =>
-      parseMode === 'CommonMark' ? formatMarkdown(text) : text
     const document: string = core.getInput('document')
 
     const bot = new Bot(token)
+    const messageIds: number[] = []
+    const sendText = async (text: string): Promise<void> => {
+      const formatted = parseMode === 'CommonMark' ? formatMarkdown(text) : text
+      const decoded =
+        parseMode === 'CommonMark'
+          ? decodeFormattedMarkdown(formatted)
+          : undefined
+      const parts =
+        decoded && decoded.text.length > 4096
+          ? splitMessage(decoded)
+          : undefined
+      const count = parts?.length ?? 1
+      for (let i = 0; i < count; i++) {
+        if (i > 0) await new Promise(resolve => setTimeout(resolve, 1100))
+        core.info(`Sending message part ${i + 1}/${count}`)
+        const part = parts?.[i]
+        const sent = part
+          ? await bot.api.sendMessage(to, part.text, {
+              entities: part.entities
+            })
+          : await bot.api.sendMessage(to, formatted, {
+              parse_mode: telegramParseMode
+            })
+        if (sent?.message_id !== undefined) messageIds.push(sent.message_id)
+        core.setOutput('message_ids', JSON.stringify(messageIds))
+        core.setOutput('message_count', messageIds.length)
+      }
+    }
 
     if (messageFile !== '') {
       console.log('Generating message from defined file...')
       const textFromFile = fs.readFileSync(messageFile, 'utf-8')
       console.log('Sending message from file...')
 
-      await bot.api.sendMessage(to, format(textFromFile), {
-        parse_mode: telegramParseMode
-      })
+      await sendText(textFromFile)
     }
 
     if (message !== '') {
       console.log('Sending simple message...')
-      await bot.api.sendMessage(to, format(message), {
-        parse_mode: telegramParseMode
-      })
+      await sendText(message)
     }
 
     if (document !== '') {

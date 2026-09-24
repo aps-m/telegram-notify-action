@@ -36,6 +36,12 @@ inputs:
     description: 'Document'
     required: false
 
+outputs:
+  message_ids:
+    description: 'JSON array of successfully sent text message IDs'
+  message_count:
+    description: 'Number of successfully sent text messages'
+
 runs:
   using: node24
   main: dist/index.js

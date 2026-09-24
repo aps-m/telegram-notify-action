@@ -53850,6 +53850,7 @@ const core = __importStar(__nccwpck_require__(2186));
 const fs = __importStar(__nccwpck_require__(7147));
 const grammy_1 = __nccwpck_require__(8775);
 const markdown_1 = __nccwpck_require__(4270);
+const split_1 = __nccwpck_require__(2274);
 const supportedParseModes = [
     'HTML',
     'Markdown',
@@ -53874,22 +53875,45 @@ async function run() {
         const messageFile = core.getInput('message_file');
         const parseMode = getParseMode(core.getInput('parse_mode'));
         const telegramParseMode = parseMode === 'CommonMark' ? 'MarkdownV2' : parseMode;
-        const format = (text) => parseMode === 'CommonMark' ? (0, markdown_1.formatMarkdown)(text) : text;
         const document = core.getInput('document');
         const bot = new grammy_1.Bot(token);
+        const messageIds = [];
+        const sendText = async (text) => {
+            const formatted = parseMode === 'CommonMark' ? (0, markdown_1.formatMarkdown)(text) : text;
+            const decoded = parseMode === 'CommonMark'
+                ? (0, split_1.decodeFormattedMarkdown)(formatted)
+                : undefined;
+            const parts = decoded && decoded.text.length > 4096
+                ? (0, split_1.splitMessage)(decoded)
+                : undefined;
+            const count = parts?.length ?? 1;
+            for (let i = 0; i < count; i++) {
+                if (i > 0)
+                    await new Promise(resolve => setTimeout(resolve, 1100));
+                core.info(`Sending message part ${i + 1}/${count}`);
+                const part = parts?.[i];
+                const sent = part
+                    ? await bot.api.sendMessage(to, part.text, {
+                        entities: part.entities
+                    })
+                    : await bot.api.sendMessage(to, formatted, {
+                        parse_mode: telegramParseMode
+                    });
+                if (sent?.message_id !== undefined)
+                    messageIds.push(sent.message_id);
+                core.setOutput('message_ids', JSON.stringify(messageIds));
+                core.setOutput('message_count', messageIds.length);
+            }
+        };
         if (messageFile !== '') {
             console.log('Generating message from defined file...');
             const textFromFile = fs.readFileSync(messageFile, 'utf-8');
             console.log('Sending message from file...');
-            await bot.api.sendMessage(to, format(textFromFile), {
-                parse_mode: telegramParseMode
-            });
+            await sendText(textFromFile);
         }
         if (message !== '') {
             console.log('Sending simple message...');
-            await bot.api.sendMessage(to, format(message), {
-                parse_mode: telegramParseMode
-            });
+            await sendText(message);
         }
         if (document !== '') {
             console.log(`Start sending file ${document}`);
@@ -53982,6 +54006,7 @@ function inline(tokens, heading = false) {
                 break;
             case 'softbreak':
             case 'hardbreak':
+                setStyle(desired());
                 output += '\n';
                 break;
             case 'text':
@@ -54085,6 +54110,161 @@ function formatMarkdown(markdown) {
     return renderBlocks(roots);
 }
 exports.formatMarkdown = formatMarkdown;
+
+
+/***/ }),
+
+/***/ 2274:
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.splitMessage = exports.decodeFormattedMarkdown = void 0;
+/** Read only the MarkdownV2 subset emitted by our CommonMark renderer. */
+function decodeFormattedMarkdown(source) {
+    let text = '';
+    const entities = [];
+    const styles = new Map();
+    const types = { '*': 'bold', _: 'italic', '~': 'strikethrough' };
+    const append = (part) => {
+        const offset = text.length;
+        text += part.text;
+        entities.push(...part.entities.map(entity => ({
+            ...entity,
+            offset: entity.offset + offset
+        })));
+    };
+    const endOf = (start, delimiter) => {
+        for (let j = start; j < source.length; j++) {
+            if (source[j] === '\\') {
+                j++;
+                continue;
+            }
+            if (source.startsWith(delimiter, j))
+                return j;
+        }
+        throw new Error('Unbalanced generated Markdown');
+    };
+    const unescape = (value) => value.replace(/\\(.)/gs, '$1');
+    for (let i = 0; i < source.length;) {
+        const c = source[i];
+        if (c === '\\') {
+            text += source[i + 1];
+            i += 2;
+        }
+        else if (c === '`') {
+            const fenced = source.startsWith('```', i);
+            const marker = fenced ? '```' : '`';
+            const end = endOf(i + marker.length, marker);
+            let body = source.slice(i + marker.length, end);
+            let language = '';
+            if (fenced) {
+                const newline = body.indexOf('\n');
+                language = body.slice(0, newline);
+                body = body.slice(newline + 1).replace(/\n$/, '');
+            }
+            body = unescape(body);
+            const offset = text.length;
+            text += body;
+            if (body.length)
+                entities.push(fenced
+                    ? { type: 'pre', offset, length: body.length, language }
+                    : { type: 'code', offset, length: body.length });
+            i = end + marker.length;
+        }
+        else if (c === '[') {
+            const labelEnd = endOf(i + 1, '](');
+            const urlEnd = endOf(labelEnd + 2, ')');
+            const offset = text.length;
+            append(decodeFormattedMarkdown(source.slice(i + 1, labelEnd)));
+            if (text.length > offset)
+                entities.push({
+                    type: 'text_link',
+                    offset,
+                    length: text.length - offset,
+                    url: unescape(source.slice(labelEnd + 2, urlEnd))
+                });
+            i = urlEnd + 1;
+        }
+        else if (c === '>' && (i === 0 || source[i - 1] === '\n')) {
+            let end = i;
+            const lines = [];
+            do {
+                const newline = source.indexOf('\n', end);
+                const lineEnd = newline < 0 ? source.length : newline;
+                lines.push(source.slice(end + 1, lineEnd));
+                end = lineEnd;
+                if (!source.startsWith('\n>', end))
+                    break;
+                end++;
+            } while (end < source.length);
+            const offset = text.length;
+            append(decodeFormattedMarkdown(lines.join('\n')));
+            if (text.length > offset)
+                entities.push({
+                    type: 'blockquote',
+                    offset,
+                    length: text.length - offset
+                });
+            i = end;
+        }
+        else if (c in types) {
+            const start = styles.get(c);
+            if (start === undefined)
+                styles.set(c, text.length);
+            else {
+                if (text.length > start)
+                    entities.push({
+                        type: types[c],
+                        offset: start,
+                        length: text.length - start
+                    });
+                styles.delete(c);
+            }
+            i++;
+        }
+        else {
+            text += c;
+            i++;
+        }
+    }
+    if (styles.size)
+        throw new Error('Unbalanced generated Markdown style');
+    return { text, entities };
+}
+exports.decodeFormattedMarkdown = decodeFormattedMarkdown;
+/** Split rendered text, clipping entity ranges without breaking surrogate pairs. */
+function splitMessage(message, limit = 4096) {
+    if (!Number.isInteger(limit) || limit < 2)
+        throw new Error('Invalid message limit');
+    const parts = [];
+    for (let start = 0; start < message.text.length;) {
+        let end = Math.min(start + limit, message.text.length);
+        if (end < message.text.length) {
+            if (/[\uD800-\uDBFF]/.test(message.text[end - 1]))
+                end--;
+            const newline = message.text.lastIndexOf('\n', end - 1);
+            const space = message.text.lastIndexOf(' ', end - 1);
+            const boundary = newline >= start ? newline : space;
+            if (boundary >= start && message.text.slice(start, boundary + 1).trim())
+                end = boundary + 1;
+        }
+        parts.push({
+            text: message.text.slice(start, end),
+            entities: message.entities.flatMap(entity => {
+                const from = Math.max(start, entity.offset);
+                const to = Math.min(end, entity.offset + entity.length);
+                return from < to
+                    ? [{ ...entity, offset: from - start, length: to - from }]
+                    : [];
+            })
+        });
+        start = end;
+    }
+    return parts;
+}
+exports.splitMessage = splitMessage;
 
 
 /***/ }),
