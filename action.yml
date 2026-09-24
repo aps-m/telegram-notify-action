@@ -18,7 +18,9 @@ inputs:
     required: true
 
   parse_mode:
-    description: 'Parse mode: markdown or html'
+    description:
+      'HTML, Markdown, MarkdownV2 (Telegram syntax), or CommonMark (automatic
+      conversion to Telegram MarkdownV2)'
     required: true
     default: 'HTML'
 

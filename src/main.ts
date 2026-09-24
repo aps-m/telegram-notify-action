@@ -2,12 +2,18 @@ import * as core from '@actions/core'
 import * as fs from 'fs'
 import type { ParseMode } from '@grammyjs/types'
 import { Bot, InputFile } from 'grammy'
+import { formatMarkdown } from './markdown'
 
-const supportedParseModes = ['HTML', 'Markdown', 'MarkdownV2'] as const
+const supportedParseModes = [
+  'HTML',
+  'Markdown',
+  'MarkdownV2',
+  'CommonMark'
+] as const
 
-function getParseMode(value: string): ParseMode {
+function getParseMode(value: string): ParseMode | 'CommonMark' {
   if ((supportedParseModes as readonly string[]).includes(value)) {
-    return value as ParseMode
+    return value as ParseMode | 'CommonMark'
   }
 
   throw new Error(
@@ -23,9 +29,13 @@ export async function run(): Promise<void> {
   try {
     const token: string = core.getInput('token')
     const to: string = core.getInput('to')
-    const message: string = core.getInput('message')
+    const message: string = core.getInput('message', { trimWhitespace: false })
     const messageFile: string = core.getInput('message_file')
     const parseMode = getParseMode(core.getInput('parse_mode'))
+    const telegramParseMode =
+      parseMode === 'CommonMark' ? 'MarkdownV2' : parseMode
+    const format = (text: string): string =>
+      parseMode === 'CommonMark' ? formatMarkdown(text) : text
     const document: string = core.getInput('document')
 
     const bot = new Bot(token)
@@ -35,12 +45,16 @@ export async function run(): Promise<void> {
       const textFromFile = fs.readFileSync(messageFile, 'utf-8')
       console.log('Sending message from file...')
 
-      await bot.api.sendMessage(to, textFromFile, { parse_mode: parseMode })
+      await bot.api.sendMessage(to, format(textFromFile), {
+        parse_mode: telegramParseMode
+      })
     }
 
     if (message !== '') {
       console.log('Sending simple message...')
-      await bot.api.sendMessage(to, message, { parse_mode: parseMode })
+      await bot.api.sendMessage(to, format(message), {
+        parse_mode: telegramParseMode
+      })
     }
 
     if (document !== '') {

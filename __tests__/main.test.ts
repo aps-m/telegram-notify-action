@@ -113,8 +113,67 @@ describe('action', () => {
     await main.run()
 
     expect(setFailedMock).toHaveBeenCalledWith(
-      'Unsupported parse_mode: PlainText. Expected one of HTML, Markdown, MarkdownV2'
+      'Unsupported parse_mode: PlainText. Expected one of HTML, Markdown, MarkdownV2, CommonMark'
     )
     expect(sendMessageMock).not.toHaveBeenCalled()
   })
+})
+
+describe('Markdown conversion selection', () => {
+  beforeEach(() => {
+    jest.clearAllMocks()
+    getInputMock = jest.spyOn(core, 'getInput').mockImplementation()
+    setFailedMock = jest.spyOn(core, 'setFailed').mockImplementation()
+  })
+
+  it.each(['message', 'message_file'])(
+    'converts CommonMark from %s',
+    async input => {
+      const text = '# Version 1.9.2\n\n### Added\n- Item.'
+      getInputMock.mockImplementation(name => {
+        if (name === 'token') return 'bot-token'
+        if (name === 'to') return '123'
+        if (name === 'parse_mode') return 'CommonMark'
+        if (name === input) return input === 'message' ? text : 'message.md'
+        return ''
+      })
+      readFileSyncMock.mockReturnValue(text)
+      await main.run()
+      expect(sendMessageMock).toHaveBeenCalledWith(
+        '123',
+        '*Version 1\\.9\\.2*\n\n*Added*\n• Item\\.',
+        { parse_mode: 'MarkdownV2' }
+      )
+      expect(setFailedMock).not.toHaveBeenCalled()
+    }
+  )
+
+  it.each(['HTML', 'Markdown', 'MarkdownV2'])(
+    'keeps %s unchanged for both inputs',
+    async mode => {
+      getInputMock.mockImplementation(name => {
+        if (name === 'token') return 'bot-token'
+        if (name === 'to') return '123'
+        if (name === 'parse_mode') return mode
+        if (name === 'message') return '<b>Text</b> *1\\.9\\.2*'
+        if (name === 'message_file') return 'message.txt'
+        return ''
+      })
+      readFileSyncMock.mockReturnValue('<b>File</b> *1\\.9\\.2*')
+      await main.run()
+      expect(sendMessageMock).toHaveBeenNthCalledWith(
+        1,
+        '123',
+        '<b>File</b> *1\\.9\\.2*',
+        { parse_mode: mode }
+      )
+      expect(sendMessageMock).toHaveBeenNthCalledWith(
+        2,
+        '123',
+        '<b>Text</b> *1\\.9\\.2*',
+        { parse_mode: mode }
+      )
+      expect(setFailedMock).not.toHaveBeenCalled()
+    }
+  )
 })
