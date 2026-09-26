@@ -40,6 +40,8 @@ export async function run(): Promise<void> {
     const bot = new Bot(token)
     const messageIds: number[] = []
     const sendText = async (text: string): Promise<void> => {
+      if (text.trim() === '') return
+
       const formatted = parseMode === 'CommonMark' ? formatMarkdown(text) : text
       const decoded =
         parseMode === 'CommonMark'

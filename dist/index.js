@@ -53879,6 +53879,8 @@ async function run() {
         const bot = new grammy_1.Bot(token);
         const messageIds = [];
         const sendText = async (text) => {
+            if (text.trim() === '')
+                return;
             const formatted = parseMode === 'CommonMark' ? (0, markdown_1.formatMarkdown)(text) : text;
             const decoded = parseMode === 'CommonMark'
                 ? (0, split_1.decodeFormattedMarkdown)(formatted)

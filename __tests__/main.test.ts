@@ -5,6 +5,7 @@
 import * as core from '@actions/core'
 import * as fs from 'fs'
 import * as main from '../src/main'
+import * as markdown from '../src/markdown'
 
 const sendMessageMock = jest.fn()
 const sendDocumentMock = jest.fn()
@@ -238,4 +239,84 @@ describe('Long CommonMark publication', () => {
     expect(core.setOutput).toHaveBeenCalledWith('message_ids', '[101]')
     expect(setFailedMock).toHaveBeenCalledWith('rate limited')
   })
+})
+
+describe('Whitespace-only text with documents', () => {
+  beforeEach(() => {
+    jest.clearAllMocks()
+    getInputMock = jest.spyOn(core, 'getInput').mockImplementation()
+    setFailedMock = jest.spyOn(core, 'setFailed').mockImplementation()
+  })
+
+  const modes = ['HTML', 'Markdown', 'MarkdownV2', 'CommonMark']
+  const inputs = ['message', 'message_file']
+  const emptyTexts = ['', ' ', '   ', '\r\n\t\n']
+
+  it.each(
+    modes.flatMap(mode =>
+      inputs.flatMap(input => emptyTexts.map(text => ({ mode, input, text })))
+    )
+  )(
+    'skips $input containing $text in $mode and sends document',
+    async ({ mode, input, text }) => {
+      getInputMock.mockImplementation(name => {
+        if (name === 'token') return 'bot-token'
+        if (name === 'to') return '123'
+        if (name === 'parse_mode') return mode
+        if (name === 'document') return 'installer.exe'
+        if (name === input) return input === 'message' ? text : 'message.md'
+        return ''
+      })
+      readFileSyncMock.mockReturnValue(text)
+
+      await main.run()
+
+      expect(sendMessageMock).not.toHaveBeenCalled()
+      expect(sendDocumentMock).toHaveBeenCalledTimes(1)
+      expect(sendDocumentMock).toHaveBeenCalledWith('123', {
+        path: 'installer.exe'
+      })
+      expect(setFailedMock).not.toHaveBeenCalled()
+      expect(readFileSyncMock.mock.calls).toEqual(
+        input === 'message_file' ? [['message.md', 'utf-8']] : []
+      )
+    }
+  )
+
+  it.each(modes.flatMap(mode => inputs.map(input => ({ mode, input }))))(
+    'preserves non-empty $input whitespace in $mode',
+    async ({ mode, input }) => {
+      const text = ' \n  First line\n\n    Indented line\n '
+      const expected =
+        mode === 'CommonMark' ? markdown.formatMarkdown(text) : text
+      const formatMock = jest.spyOn(markdown, 'formatMarkdown')
+      getInputMock.mockImplementation(name => {
+        if (name === 'token') return 'bot-token'
+        if (name === 'to') return '123'
+        if (name === 'parse_mode') return mode
+        if (name === 'document') return 'installer.exe'
+        if (name === input) return input === 'message' ? text : 'message.md'
+        return ''
+      })
+      readFileSyncMock.mockReturnValue(text)
+
+      await main.run()
+
+      expect(core.getInput).toHaveBeenCalledWith('message', {
+        trimWhitespace: false
+      })
+      expect(formatMock.mock.calls).toEqual(
+        mode === 'CommonMark' ? [[text]] : []
+      )
+      expect(sendMessageMock).toHaveBeenCalledTimes(1)
+      expect(sendMessageMock).toHaveBeenCalledWith('123', expected, {
+        parse_mode: mode === 'CommonMark' ? 'MarkdownV2' : mode
+      })
+      expect(sendDocumentMock).toHaveBeenCalledWith('123', {
+        path: 'installer.exe'
+      })
+      expect(setFailedMock).not.toHaveBeenCalled()
+      formatMock.mockRestore()
+    }
+  )
 })
