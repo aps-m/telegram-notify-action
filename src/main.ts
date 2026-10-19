@@ -1,9 +1,10 @@
 import * as core from '@actions/core'
 import * as fs from 'fs'
 import type { ParseMode } from '@grammyjs/types'
-import { Bot, InputFile } from 'grammy'
+import { Bot, HttpError, InputFile } from 'grammy'
 import { formatMarkdown } from './markdown'
 import { decodeFormattedMarkdown, splitMessage } from './split'
+import { formatErrorDiagnostics, redactToken } from './diagnostics'
 
 const supportedParseModes = [
   'HTML',
@@ -27,8 +28,10 @@ function getParseMode(value: string): ParseMode | 'CommonMark' {
  * @returns {Promise<void>} Resolves when the action is complete.
  */
 export async function run(): Promise<void> {
+  let token = ''
   try {
-    const token: string = core.getInput('token')
+    token = core.getInput('token')
+    if (token !== '') core.setSecret(token)
     const to: string = core.getInput('to')
     const message: string = core.getInput('message', { trimWhitespace: false })
     const messageFile: string = core.getInput('message_file')
@@ -83,14 +86,35 @@ export async function run(): Promise<void> {
     }
 
     if (document !== '') {
-      console.log(`Start sending file ${document}`)
-      await bot.api.sendDocument(to, new InputFile(document))
+      core.info(redactToken(`Start sending file ${document}`, token))
+      const startedAt = Date.now()
+      try {
+        const sent = await bot.api.sendDocument(to, new InputFile(document))
+        core.info(
+          `sendDocument succeeded after ${Date.now() - startedAt} ms (message_id: ${sent?.message_id ?? 'unknown'})`
+        )
+      } catch (error) {
+        core.info(`sendDocument failed after ${Date.now() - startedAt} ms`)
+        if (error instanceof HttpError) {
+          core.warning(
+            'Document delivery is unconfirmed: Telegram may already have received the file. Retrying may send a duplicate.'
+          )
+        }
+        throw error
+      }
     }
 
     // Set outputs for other workflow steps to use
     //core.setOutput('time', new Date().toTimeString())
   } catch (error) {
-    // Fail the workflow run if an error occurs
-    if (error instanceof Error) core.setFailed(error.message)
+    core.info(`Error diagnostics: ${formatErrorDiagnostics(error, token)}`)
+    core.setFailed(
+      redactToken(
+        error instanceof Error
+          ? error.message
+          : 'Unexpected failure (see diagnostics)',
+        token
+      )
+    )
   }
 }
