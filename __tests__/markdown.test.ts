@@ -35,6 +35,10 @@ describe('Markdown formatter', () => {
       '[site][ref]\n\n[ref]: https://example.com',
       '[site](https://example.com)'
     ],
+    [
+      '[site][multi\nline]\n\n[multi\nline]: https://example.com\n  "a multiline\n  title"',
+      '[site](https://example.com)'
+    ],
     ['<https://example.com>', '[https://example\\.com](https://example.com)'],
     ['![alt](https://example.com/a.png)', '[alt](https://example.com/a.png)'],
     ['> quoted.\n> next', '>quoted\\.\n>next'],
@@ -44,4 +48,22 @@ describe('Markdown formatter', () => {
   ])('converts %s', (source, expected) => {
     expect(formatMarkdown(source)).toBe(expected)
   })
+
+  it.each([
+    ['label', '[', '\\['],
+    ['title', '[a]: /u "', '\\[a\\]: /u "']
+  ])(
+    'handles a long unclosed reference %s promptly',
+    (_name, prefix, escaped) => {
+      const lines = 'x\n'.repeat(200_000)
+      const started = performance.now()
+      const result = formatMarkdown(prefix + lines)
+      const elapsed = performance.now() - started
+
+      expect(result).toBe(escaped + lines.trimEnd())
+      // CVE-2026-111758: repeated concatenation made these inputs quadratic.
+      // Jest's timeout cannot interrupt synchronous parsing, so check elapsed time.
+      expect(elapsed).toBeLessThan(5000)
+    }
+  )
 })
